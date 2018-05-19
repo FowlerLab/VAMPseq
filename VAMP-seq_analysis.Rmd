@@ -1,0 +1,1766 @@
+---
+title: "VAMP-seq analysis for PTEN and TPMT"
+author: "Kenneth A. Matreyek"
+date: "2/20/2018"
+output: html_document
+---
+
+# Analysis setup
+This R markdown file will go through the processes of analyzing the data for the VAMP-seq manuscript, using 4 files as the starting point. These files are the PTEN and TPMT variant score data tables, as well as the PTEN and TPMT positional score data tables. These files were provided as supplementary data files from the journal, and can also be obtained at our GitHub repo. Please place these files in the same directory as this R Markdown file to allow the analyses to proceed.  
+  
+Furthermore, create a directory titled "Output" in the same directory as this R Markdown file to create the graphics files used to generate the figures.  
+```{r Get everything from the four supplementary tables}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+graphics.off()
+markdown_directory <- getwd()
+set.seed(12345)
+
+pten_variants <- read.table(file = "PTEN_variant_data.tsv", stringsAsFactors = FALSE, sep = "\t", header = TRUE)
+tpmt_variants <- read.table(file = "TPMT_variant_data.tsv", stringsAsFactors = FALSE, sep = "\t", header = TRUE)
+pten_positions <- read.table(file = "PTEN_positional_data.tsv", stringsAsFactors = FALSE, sep = "\t", header = TRUE)
+tpmt_positions <- read.table(file = "TPMT_positional_data.tsv", stringsAsFactors = FALSE, sep = "\t", header = TRUE)
+```
+  
+Also, load the necessary packages, and set up the default theme that will be used in all plots  
+```{r setup, include=FALSE, warning = FALSE}
+if(!require(ggplot2)){install.packages("ggplot2")}
+library(ggplot2)
+
+if(!require(plyr)){install.packages("plyr")}
+library(plyr)
+
+if(!require(reshape)){install.packages("reshape")}
+library(reshape)
+
+if(!require(data.table)){install.packages("data.table")}
+library(data.table)
+
+if(!require(scales)){install.packages("scales")}
+library(scales)
+
+if(!require(GGally)){install.packages("GGally")}
+library(GGally)
+
+if(!require(ggdendro)){install.packages("ggdendro")}
+library(ggdendro)
+
+if(!require(grid)){install.packages("grid")}
+library(grid)
+
+if(!require(MASS)){install.packages("MASS")}
+library(MASS)
+
+## The package versions used by the author
+version    #R version 3.4.4
+paste("ggplot2 version:",packageVersion("ggplot2"))     #‘2.2.1’
+paste("plyr version:",packageVersion("plyr"))     #‘1.8.4’
+paste("reshape version:",packageVersion("reshape"))     #‘0.8.7’
+paste("data.table version:",packageVersion("data.table"))     #‘1.10.4.3’
+paste("scales version:",packageVersion("scales"))     #‘0.5.0’
+paste("GGally version:",packageVersion("GGally"))     #‘1.3.2’
+paste("ggdendro version:",packageVersion("ggdendro"))     #‘0.1.20’
+paste("grid version:",packageVersion("grid"))     #‘3.4.4’
+paste("MASS version:",packageVersion("MASS"))     #‘7.3.49’
+
+theme_new <- theme_set(theme_bw())
+# Original theme (has gridlines)
+theme_new <- theme_update(panel.grid.major = element_line(colour = "grey85"),panel.grid.minor = element_line(colour = "grey98"))
+```
+  
+Here, we are also changing the factor levels of the amino acids to reflect a more informative order:  
+```{r Changing the default factor levels for amino acids}
+pten_positions$start <- factor(pten_positions$start, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+pten_variants$start <- factor(pten_variants$start, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+pten_variants$end <- factor(pten_variants$end, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+
+tpmt_positions$start <- factor(tpmt_positions$start, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+tpmt_variants$start <- factor(tpmt_variants$start, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+tpmt_variants$end <- factor(tpmt_variants$end, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+```
+  
+Here are some basic stats on the abundance classes for the PTEN and TPMT datatables we just imported:
+(note: variants with single amino acid substitutions were referred to as "missense" in the "class" column, though true missense variants achievable through single nucleotide variation are a subset of these with 1 noted in the "snv" column)  
+```{r PTEN basic stats, echo = FALSE}
+paste("We quantified the abundance of", nrow(subset(pten_variants, class == "missense" & !is.na(score))) + nrow(subset(tpmt_variants, class == "missense" & !is.na(score))), "variants of two disease-related proteins, PTEN and TPMT")
+paste("Furthermore, we identified", nrow(subset(pten_variants, class == "missense" & abundance_class == "low" & !is.na(score))), "low-abundance PTEN variants that could be pathogenic and", nrow(subset(tpmt_variants, class == "missense" & abundance_class == "low" & !is.na(score))), "low-abundance TPMT variants that could alter drug metabolism")
+
+paste("There are ",nrow(subset(pten_variants, class == "synonymous" & !is.na(score))), " synonymous PTEN variants with abundance scores",sep="")
+paste("There are ",nrow(subset(pten_variants, class == "nonsense" & !is.na(score))), " nonsense PTEN variants with abundance scores",sep="")
+paste("There are ",nrow(subset(pten_variants, class == "missense" & !is.na(score))), " single amino acid PTEN variants with abundance scores",sep="")
+paste("There are ",nrow(subset(pten_variants, class == "missense" & !is.na(score) & snv == 1)), " missense (possible by SNV) PTEN variants with abundance scores",sep="")
+
+paste("There are ",nrow(subset(tpmt_variants, class == "synonymous" & !is.na(score))), " synonymous TPMT variants with abundance scores",sep="")
+paste("There are ",nrow(subset(tpmt_variants, class == "nonsense" & !is.na(score))), " nonsense TPMT variants with abundance scores",sep="")
+paste("There are ",nrow(subset(tpmt_variants, class == "missense" & !is.na(score))), " single amino acid TPMT variants with abundance scores",sep="")
+paste("There are ",nrow(subset(tpmt_variants, class == "missense" & !is.na(score) & snv == 1)), " missense (possible by SNV) TPMT variants with abundance scores",sep="")
+```
+  
+  
+# Initial analyses: VAMP-seq assay performance
+
+To validate that we observe different EGFP:mCherry ratios depending on the fused variant, we used EGFP with WT or uknown unstable variants, as well as numerous randomly picked variants expected to span the range of the ratio. The geometric mean of the distribution of ratios for each variant was used for the comparison.
+
+Comparison of PTEN VAMP-seq scores with individually assessed EGFP:mCherry variants (WT-normalized geometric means plotted)  
+```{r pten_individual graph}
+pten_variants_individual <- subset(pten_variants, !is.na(egfp_geomean))
+pten_stability_control_variants <- c("WT","Y68H","C136R","D252G","L345Q","C124S")
+pten_variants_individual$variant <- factor(pten_variants_individual$variant, levels = c(pten_stability_control_variants,pten_variants_individual$variant[!(pten_variants_individual$variant %in% pten_stability_control_variants)]))
+
+PTEN_individual_plot <- ggplot() + geom_errorbar(data = pten_variants_individual, aes(x = variant, ymin = egfp_geomean_lower_ci, ymax = egfp_geomean_upper_ci), color = "black") +
+  geom_point(data = pten_variants_individual, aes(x = variant, y = egfp_geomean), color = "black", size = 2) + 
+  geom_point(data = pten_variants_individual, aes(x = variant, y = egfp_geomean), color = "red", size = 1) + 
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1,1.25,1.5)) + theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust = 0)) +
+  xlab(NULL) + ylab("Mean WT-normalized\nEGFP / mCherry ratio")
+ggsave(file = "Output/PTEN_individual_plot.pdf", PTEN_individual_plot, height = 3, width = 5)
+PTEN_individual_plot
+```
+  
+Comparison of TPMT VAMP-seq scores with individually assessed EGFP:mCherry variants (WT-normalized geometric means plotted)  
+```{r tpmt individual}
+tpmt_individual <- subset(tpmt_variants, !is.na(single_WTNorm))[,c("variant","single_WTNorm","single_StErr")]
+tpmt_individual <- rbind(tpmt_individual, c("WT","1","0"))
+
+colnames(tpmt_individual) <- c("variant","mean","se")
+tpmt_individual$mean <- as.numeric(tpmt_individual$mean)
+tpmt_individual$se <- as.numeric(tpmt_individual$se)
+tpmt_individual$lower_ci <- tpmt_individual$mean - qnorm(0.975) * tpmt_individual$se
+tpmt_individual$upper_ci <- tpmt_individual$mean + qnorm(0.975) * tpmt_individual$se
+
+tpmt_individual$position <- gsub("[^0-9]", "", tpmt_individual$variant)
+tpmt_individual[tpmt_individual$position == "","position"] <- 0
+tpmt_individual$position <- as.numeric(tpmt_individual$position)
+
+tpmt_stability_control_variants <- c("WT","A80P","A154T","Y240C")
+tpmt_individual$variant <- factor(tpmt_individual$variant, levels = c(tpmt_stability_control_variants,tpmt_individual$variant[!(tpmt_individual$variant %in% tpmt_stability_control_variants)]))
+
+TPMT_individual_plot <- ggplot() + geom_errorbar(data = tpmt_individual, aes(x = variant, ymax = upper_ci, ymin = lower_ci), color = "black") +
+  geom_point(data = tpmt_individual, aes(x = variant, y = mean), color = "black", size = 2) + 
+  geom_point(data = tpmt_individual, aes(x = variant, y = mean), color = "red", size = 1) + 
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1,1.25,1.5)) + theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust = 0)) +
+  xlab(NULL) + ylab("Mean WT-normalized\nEGFP / mCherry ratio")
+ggsave(file = "Output/TPMT_individual_plot.pdf", TPMT_individual_plot, height = 3, width = 4.5)
+TPMT_individual_plot
+```
+  
+Paste some stats amongst the PTEN and TPMT WTs and controls  
+```{r Paste some Stats amongst the PTEN and TPMT WTs and controls, echo=FALSE}
+paste("PTEN WT to low abundance controls fold differene:", round(1 / mean(subset(pten_variants_individual, variant %in% c("Y68H","C124R","L345Q","D252G"))$egfp_geomean),2))
+paste("TPMT WT to low abundance controls fold differene:", round(1 / mean(subset(tpmt_individual, variant %in% c("A80P","A154T","Y240C"))$mean),4))
+paste("TPMT WT to low abundance control A80P fold differene:", round(1 / mean(subset(tpmt_individual, variant %in% c("A80P"))$mean),4))
+paste("TPMT WT to low abundance control Y240C fold differene:", round(1 / mean(subset(tpmt_individual, variant %in% c("Y240C"))$mean),4))
+```
+  
+In the case of PTEN, we also tested fusion of a shorter 15-amino acid fragment of EGFP, rather than the entire protein itself, to see if size of the fused sequence with the PTEN protein altered these ratios at all. 
+```{r Full EGFP and SplitGFP comparisons, echo = FALSE}
+paste("PTEN full-EGFP:mCherry and splitGFP:mCherry fusion ratio correlations, Pearson's r:",round(sqrt(summary(lm(pten_variants$sgfp_geomean ~ pten_variants$egfp_geomean))$r.squared),2))
+paste("PTEN full-EGFP:mCherry and splitGFP:mCherry fusion ratio correlations, Spearman's R:", round(cor(pten_variants$sgfp_geomean, pten_variants$egfp_geomean, use="pairwise.complete.obs", method = "spearman"),2))
+```
+  
+```{r Print and save split-GFP plot, warning = FALSE}
+PTEN_egfp_sgfp_plot <- ggplot() + geom_hline(yintercept = 1, color = "grey50") + geom_vline(xintercept = 1, color = "grey50") +
+  geom_abline(slope = lm(pten_variants$sgfp_geomean ~ pten_variants$egfp_geomean)$coefficient[2], intercept = lm(pten_variants$sgfp_geomean ~ pten_variants$egfp_geomean)$coefficient[1], linetype = 2, color = "grey50") +
+  geom_point(data = pten_variants, aes(x = egfp_geomean, y = sgfp_geomean)) + 
+  geom_text(data = pten_variants, aes(x = egfp_geomean, y = sgfp_geomean + 0.03), label = pten_variants$variant, color = "red") +
+  annotate("text", x = min(subset(pten_variants, !is.na(sgfp_geomean))$egfp_geomean, na.rm = TRUE), y = max(subset(pten_variants, !is.na(sgfp_geomean))$sgfp_geomean, na.rm = TRUE) + 0.03,
+           label = paste("r:",round(sqrt(summary(lm(pten_variants$sgfp_geomean ~ pten_variants$egfp_geomean))$r.squared),2)), hjust = 0.1) +
+  annotate("text", x = min(subset(pten_variants, !is.na(sgfp_geomean))$egfp_geomean, na.rm = TRUE), y = max(subset(pten_variants, !is.na(sgfp_geomean))$sgfp_geomean - 0.1, na.rm = TRUE) + 0.03,
+           label = paste("rho:",round(cor(pten_variants$sgfp_geomean, pten_variants$egfp_geomean, use="pairwise.complete.obs", method = "spearman"),2)), hjust = 0.1, parse = TRUE) +
+  scale_x_continuous(limits = c(0,1.1), breaks = c(0,0.25,0.5,0.75,1), expand = c(0,0)) + scale_y_continuous(limits = c(0,1.1), breaks = c(0,0.25,0.5,0.75,1), expand = c(0,0)) +
+  xlab("WT-normalized EGFP/mCherry ratio") + ylab("WT-normalized split-EGFP/mCherry ratio")
+ggsave(file = "Output/PTEN_egfp_sgfp_plot.pdf", PTEN_egfp_sgfp_plot, height = 4, width = 4)
+PTEN_egfp_sgfp_plot
+```
+  
+  
+We also wanted to ensure that the replicate experiments correlated with each other. Thus, we made all-by-all comparisons of the replicate experiments for PTEN and TPMT.  
+```{r Getting some PTEN score correlations on, warning = FALSE}
+scatterplot_correlation_fxn <- function(data, mapping, ...){
+  p <- ggplot(data = data, mapping = mapping) + 
+    geom_point(alpha = 0.01) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  p
+}
+
+pten_variants_min <- pten_variants[,c("class","score1","score2","score3","score4","score5","score6","score7","score8")]
+tpmt_variants_min <- tpmt_variants[,c("class","score1","score2","score3","score4","score5","score6","score7","score8")]
+
+## PTEN experiment correlations
+pten_pearson_cor_matrix <- as.matrix(cor(pten_variants_min[,c("score1","score2","score3","score4","score5","score6","score7","score8")], use="pairwise.complete.obs", method = "pearson"))
+pten_spearman_cor_matrix <- as.matrix(cor(pten_variants_min[,c("score1","score2","score3","score4","score5","score6","score7","score8")], use="pairwise.complete.obs", method = "spearman"))
+
+pten_count_matrix <- as.matrix(cor(pten_variants_min[,c("score1","score2","score3","score4","score5","score6","score7","score8")], use="pairwise.complete.obs", method = "pearson"))
+
+pten_scatterplot_matrix_pearson <- ggpairs(pten_variants_min,columns = c("score1","score2","score3","score4","score5","score6","score7","score8"), lower = list(continuous = scatterplot_correlation_fxn), method = "pearson")
+ggsave(file = "Output/PTEN_scatterplot_matrix_pearson.png", plot = pten_scatterplot_matrix_pearson, device = "png", height =7, width = 7)
+
+pten_pearson_cor_matrix
+pten_spearman_cor_matrix
+pten_scatterplot_matrix_pearson
+
+pairwise_names <- c("score1","score2","score3","score4","score5","score6","score7","score8")
+pten_pairwise_count_vector <- c()
+for(x in 1:(length(pairwise_names)-1)){
+  for(y in (x+1):length(pairwise_names)){
+    print(paste(x,y))
+    pairwise_count <- nrow(subset(pten_variants_min, !is.na(pten_variants_min[,pairwise_names[x]]) & !is.na(pten_variants_min[,pairwise_names[y]])))
+    pten_pairwise_count_vector <- c(pten_pairwise_count_vector,pairwise_count)
+  }
+}
+print(paste("The PTEN replicate pairwise correlations were based on n values of:",toString(pten_pairwise_count_vector)))
+
+
+## TPMT experiment correlations
+tpmt_pearson_cor_matrix <- as.matrix(cor(tpmt_variants_min[,c("score1","score2","score3","score4","score5","score6","score7","score8")], use="pairwise.complete.obs", method = "pearson"))
+tpmt_spearman_cor_matrix <- as.matrix(cor(tpmt_variants_min[,c("score1","score2","score3","score4","score5","score6","score7","score8")], use="pairwise.complete.obs", method = "spearman"))
+
+# Remove data from TPMT library preparations with almost nonexistant overlapping variants
+tpmt_pearson_cor_matrix[1:4,5:6] <- NA; tpmt_pearson_cor_matrix[5:6,1:4] <- NA
+tpmt_spearman_cor_matrix[1:4,5:6] <- NA; tpmt_spearman_cor_matrix[5:6,1:4] <- NA
+
+tpmt_scatterplot_matrix_pearson <- ggpairs(tpmt_variants_min,columns = c("score1","score2","score3","score4","score5","score6","score7","score8"), lower = list(continuous = scatterplot_correlation_fxn), method = "pearson")
+ggsave(file = "Output/TPMT_scatterplot_matrix_pearson.png", tpmt_scatterplot_matrix_pearson, height = 7, width = 7)
+
+tpmt_pearson_cor_matrix
+tpmt_spearman_cor_matrix
+tpmt_scatterplot_matrix_pearson
+
+tpmt_pairwise_count_vector <- c()
+for(x in 1:(length(pairwise_names)-1)){
+  for(y in (x+1):length(pairwise_names)){
+    pairwise_count <- nrow(subset(tpmt_variants_min, !is.na(tpmt_variants_min[,pairwise_names[x]]) & !is.na(tpmt_variants_min[,pairwise_names[y]])))
+    tpmt_pairwise_count_vector <- c(tpmt_pairwise_count_vector,pairwise_count)
+    print(paste(x,y,pairwise_count))
+  }
+}
+print(paste("The TPMT replicate pairwise correlations were based on n values of:",toString(tpmt_pairwise_count_vector)))
+```
+  
+```{r Print out some stats about the experimental replicate correlations, echo = FALSE}
+paste("Mean PTEN replicate correlation Pearson's r:",round(mean(pten_pearson_cor_matrix[-seq(1,nrow(pten_pearson_cor_matrix)^2,nrow(pten_pearson_cor_matrix)+1)]),2))
+paste("Median PTEN replicate correlation Pearson's r:",round(median(pten_pearson_cor_matrix[-seq(1,nrow(pten_pearson_cor_matrix)^2,nrow(pten_pearson_cor_matrix)+1)]),2))
+paste("Mean PTEN replicate correlation Spearman's r:",round(mean(pten_spearman_cor_matrix[-seq(1,nrow(pten_spearman_cor_matrix)^2,nrow(pten_spearman_cor_matrix)+1)]),2))
+paste("Median PTEN replicate correlation Spearman's r:",round(median(pten_spearman_cor_matrix[-seq(1,nrow(pten_spearman_cor_matrix)^2,nrow(pten_spearman_cor_matrix)+1)]),2))
+
+paste("Mean TPMT replicate correlation Pearson's r:",round(mean(tpmt_pearson_cor_matrix[-seq(1,nrow(tpmt_pearson_cor_matrix)^2,nrow(tpmt_pearson_cor_matrix)+1)], na.rm = TRUE),2))
+paste("Median TPMT replicate correlation Pearson's r:",round(median(tpmt_pearson_cor_matrix[-seq(1,nrow(tpmt_pearson_cor_matrix)^2,nrow(tpmt_pearson_cor_matrix)+1)], na.rm = TRUE),2))
+paste("Mean TPMT replicate correlation Spearman's r:",round(mean(tpmt_spearman_cor_matrix[-seq(1,nrow(tpmt_spearman_cor_matrix)^2,nrow(tpmt_spearman_cor_matrix)+1)], na.rm = TRUE),2))
+paste("Median TPMT replicate correlation Spearman's r:",round(median(tpmt_spearman_cor_matrix[-seq(1,nrow(tpmt_spearman_cor_matrix)^2,nrow(tpmt_spearman_cor_matrix)+1)], na.rm = TRUE),2))
+```
+  
+  
+# Analyzing the VAMP-seq abundance scores  
+With the initial quality of the data assessed, we tried to summarize how the results looked at the protein level.
+A critical thresholds we repeatedly used for PTEN classification was the 5% lowest synonymous variant score. This is more stringent than using the lower-bound of the 95% confidence interval of the synonymous distribution, assuming a normal distribution.
+  
+The lowest 10% of missense variants and the median of the synonymous variants were critical values used throughout the analysis as well.  
+```{r import data}
+pten_synonymous_5th <- quantile(subset(pten_variants, class == "synonymous")$score, 0.05)
+paste("The threshold value above which the top 95% of PTEN synonymous  variant scores reside, which is used in the analysis:", round(pten_synonymous_5th,2))
+paste("The lower bound of the 95% confidence interval of the PTEN synonymous distribution score assuming a normal distribution:", round(mean(subset(pten_variants, class == "synonymous")$score) - qnorm(0.975) * sd(subset(pten_variants, class == "synonymous")$score)/sqrt(8-1),2))
+
+tpmt_synonymous_5th <- quantile(subset(tpmt_variants, class == "synonymous")$score, 0.05)
+paste("The threshold value above which the top 95% of TPMT synonymous variant scores reside, which is used in the analysis:", round(tpmt_synonymous_5th,2))
+```
+  
+#### Plots of nonsense variant scores by position
+The abundance scores of nonsense variants were plotting along the positions of the PTEN and TPMT proteins.  
+```{r Nonsense mutations by position, fig.height = 1.5, fig.width = 2.75, warning = FALSE}
+pten_trunc_score_position_plot <- ggplot() + geom_point(data = subset(pten_variants, class == "nonsense"), aes(x = as.numeric(position), y = score), size = 0.5) + 
+  ylab("Stability score") + xlab("Position in protein") + geom_hline(yintercept = pten_variants[pten_variants$class == "wt","score"], color = "blue") + 
+  scale_y_continuous(limits = c(-0.5,1.3), breaks = c(-0.4,0,0.4,0.8,1.2)) + scale_x_continuous(breaks = c(0,100,200,300,400))
+ggsave(file = "Output/PTEN_trunc_score_position_plot.pdf", pten_trunc_score_position_plot, height = 1.5, width = 2.25)
+
+tpmt_trunc_score_position_plot <- ggplot() + geom_point(data = subset(tpmt_variants, class == "nonsense"), aes(x = as.numeric(position), y = score), size = 0.5) + 
+  ylab("Stability score") + xlab("Position in protein") + geom_hline(yintercept = pten_variants[pten_variants$class == "wt","score"], color = "blue") +
+  scale_y_continuous(limits = c(-0.5,1.3), breaks = c(-0.4,0,0.4,0.8,1.2)) + scale_x_continuous(breaks = c(0,50,100,150,200))
+ggsave(file = "Output/TPMT_trunc_score_position_plot.pdf", tpmt_trunc_score_position_plot, height = 1.5, width = 2.25)
+print(pten_trunc_score_position_plot)
+print(tpmt_trunc_score_position_plot)
+```
+  
+### Heatmap and density plot legend for PTEN
+To summarize the data, heatmaps for the abundance scores of both proteins were produced.
+  
+First, here is the heatmap for PTEN. The WT side-chains at each position are marked by the black square, and colored according to the WT score. Positions that did not have any data are colored grey. Please see the gradients used to color the single amino acid variants in the density plot created in the code chunk below this one for the color key.  
+```{r Big PTEN summary heatmap, echo=FALSE, fig.height = 9, fig.width = 3}
+wtseq <- "MTAIIKEIVSRNKRRYQEDGFDLDLTYIYPNIIAMGFPAERLEGVYRNNIDDVVRFLDSKHKNHYKIYNLCAERHYDTAKFNCRVAQYPFEDHNPPQLELIKPFCEDLDQWLSEDDNHVAAIHCKAGKGRTGVMICAYLLHRGKFLKAQEALDFYGEVRTRDKKGVTIPSQRRYVYYYSYLLKNHLDYRPVALLFHKMMFETIPMFSGGTCNPQFVVCQLKVKIYSSNSGPTRREDKFMYFEFPQPLPVCGDIKVEFFHKQNKMLKKDKMFHFWVNTFFIPGPEETSEKVENGSLCDQEIDSICSIERADNDKEYLVLTLTKNDLDKANKDKANRYFSPNFKVKLYFTKTVEEPSNPEASSSTSVTPDVSDNEPDHYRYSDTTDSDPENEPFDEDQHTQITKV"
+wtseqframe <- data.frame(seq(1,nchar(wtseq)))
+wtseqframe$end <- rep("NA",nchar(wtseq))
+for (x in 1:nchar(wtseq)){wtseqframe$end[x] <- substr(wtseq,x,x)}
+wtseqframe$score <- pten_variants[pten_variants$class == "wt","score"]
+colnames(wtseqframe) <- c("position","end","score")
+
+pten_lower_bound <- as.numeric(quantile(subset(pten_variants, class == "missense")$score, 0.1, na.rm = TRUE))
+
+position_vector <- seq(1:nchar(wtseq))
+aa_vector <- c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X")
+full_combinations <- as.vector(outer(position_vector, aa_vector, paste, sep=""))
+missing_combinations <- data.frame(full_combinations[!(full_combinations %in% substr(subset(pten_variants, !is.na(score))$variant,2,10))]); colnames(missing_combinations) <- "variant"
+missing_combinations$position <- gsub("[^0-9]","",missing_combinations$variant); missing_combinations$position <- as.numeric(missing_combinations$position)
+missing_combinations$end <- gsub("[0-9]","",missing_combinations$variant); missing_combinations$end <- factor(missing_combinations$end, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+
+pten_full_variant_heatmap <- ggplot() +
+  geom_tile(data = missing_combinations, aes(x = end, y = position), fill = "grey70") +
+  geom_tile(data = subset(pten_variants, (class == "missense" | class == "nonsense") & score > pten_lower_bound & score < 1), aes(x = end, y = position, fill = score)) +
+  geom_tile(data = subset(pten_variants, (class == "missense" | class == "nonsense") & score >= 1), aes(x = end, y = position, fill = score)) +
+  geom_tile(data = subset(pten_variants, (class == "missense" | class == "nonsense") & score <= pten_lower_bound), aes(x = end, y = position), fill = "blue") +
+  geom_tile(data = wtseqframe, aes(x = end, y= position, fill = score)) +
+  geom_point(data = wtseqframe, aes(x = end, y = position), shape = 15, size = 0.4) +
+  xlab(NULL) + scale_y_reverse(expand = c(0,0), breaks = c(1,seq(10,400,10))) +  ylab(NULL) +
+  scale_fill_gradientn(colours = c("blue","white","red"), values = rescale(c(pten_lower_bound,1,2)), limits=c(pten_lower_bound,2)) + 
+  theme(panel.background = element_rect(fill = "white"), legend.position = "none",
+        panel.grid.major = element_line(colour = "grey90"))
+ggsave(file = "Output/PTEN_full_variant_heatmap.pdf", pten_full_variant_heatmap, height = 6, width = 3)
+print(pten_full_variant_heatmap)
+```
+  
+These are the separate score distributions for synonymous, nonsense, and single amino acid variants. Synonymous and nonsense variants are colored dark red and dark blue, respectively. The single amino acid variants were colored according to their score, with the single amino acids with the 10% lowest scores colored dark blue, going in a gradient toward the WT value of 1 which was colored white, with variants with scores higher than 1 going in a color gradient going toward red.  
+```{r PTEN density plot, fig.height = 1.5, fig.width = 3, warning = FALSE}
+pten_m <- ggplot(data = subset(pten_variants, class == "missense"), aes(x = score, y = ..scaled..))
+pten_m <- pten_m + geom_density()
+pten_q <- ggplot_build(pten_m)$data[[1]]
+pten_q_low <- subset(pten_q, x <= pten_lower_bound)
+pten_q_mid <- subset(pten_q, x > pten_lower_bound & x < 1)
+pten_q_high <- subset(pten_q, x >= 1)
+
+pten_heatmap_density <- ggplot() + 
+  geom_segment(data = pten_q_low , aes(x = x, y = y, xend = x, yend = 0), colour = "blue", size = 2) +
+  geom_segment(data = pten_q_mid, aes(x = x, y = y, xend = x, yend = 0, colour = x), size = 2) +
+  geom_segment(data = pten_q_high, aes(x = x, y = y, xend = x, yend = 0, colour = x), size = 2) +
+  geom_density(data = subset(pten_variants, class == "missense"), aes(x = score, y = ..scaled..), size = 1) + 
+  scale_color_gradientn(colours = c("blue","white","red"), values = rescale(c(pten_lower_bound,1,2)), limits=c(pten_lower_bound,2)) + 
+  scale_x_continuous(limits = c(-0.8, 2), breaks = seq(-0.4,2,0.4), expand = c(0,0)) +
+  scale_y_continuous(limits = c(0,1.2), breaks = c(0,0.4,0.8,1.2), expand = c(0,0.002)) + xlab("Variant abundance score") + ylab("Density") +
+  theme(panel.background = element_rect(fill = "white"), legend.position = "none") +
+  geom_density(data = subset(pten_variants, class == "synonymous"), aes(x = score, y = ..scaled..), color = "darkred", alpha = 0.4, size = 1, linetype = 2) +
+  geom_density(data = subset(pten_variants, class == "nonsense"), aes(x = score, y = ..scaled..), color = "darkblue", alpha = 0.4, size = 1, linetype = 2) +
+  geom_vline(xintercept = quantile(subset(pten_variants, class == "synonymous")$score,0.05), linetype = 2)
+ggsave(file = "Output/PTEN_heatmap_density.pdf", pten_heatmap_density, height = 1.2, width = 3)
+print(pten_heatmap_density)
+```
+  
+#### Heatmap and density plot legend for TPMT
+Analagous heatmap and density plots for TPMT. See above PTEN chunks for details.  
+```{r Big TPMT summary heatmap, echo=FALSE, fig.height = 9, fig.width = 3}
+wtseq <- "MDGTRTSLDIEEYSDTEVQKNQVLTLEEWQDKWVNGKTAFHQEQGHQLLKKHLDTFLKGKSGLRVFFPLCGKAVEMKWFADRGHSVVGVEISELGIQEFFTEQNLSYSEEPITEIPGTKVFKSSSGNISLYCCSIFDLPRTNIGKFDMIWDRGALVAINPGDRKCYADTMFSLLGKKFQYLLCVLSYDPTKHPGPPFYVPHAEIERLFGKICNIRCLEKVDAFEERHKSWGIDCLFEKLYLLTEK"
+wtseqframe <- data.frame(seq(1,nchar(wtseq)))
+wtseqframe$end <- rep("NA",nchar(wtseq))
+for (x in 1:nchar(wtseq)){wtseqframe$end[x] <- substr(wtseq,x,x)}
+wtseqframe$score <- tpmt_variants[tpmt_variants$class == "wt","score"]
+colnames(wtseqframe) <- c("position","end","score")
+
+tpmt_lower_bound <- as.numeric(quantile(subset(tpmt_variants, class == "missense")$score, 0.1, na.rm = TRUE))
+
+position_vector <- seq(1:nchar(wtseq))
+aa_vector <- c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X")
+full_combinations <- as.vector(outer(position_vector, aa_vector, paste, sep=""))
+missing_combinations <- data.frame(full_combinations[!(full_combinations %in% substr(subset(tpmt_variants, !is.na(score))$variant,2,10))]); colnames(missing_combinations) <- "variant"
+missing_combinations$position <- gsub("[^0-9]","",missing_combinations$variant); missing_combinations$position <- as.numeric(missing_combinations$position)
+missing_combinations$end <- gsub("[0-9]","",missing_combinations$variant); missing_combinations$end <- factor(missing_combinations$end, levels = c("A","V","I","L","M","F","Y","W","S","T","N","Q","C","G","P","R","H","K","D","E","X"))
+
+tpmt_full_variant_heatmap <- ggplot() +
+  geom_tile(data = missing_combinations, aes(x = end, y = position), fill = "grey70") +
+  geom_tile(data = subset(tpmt_variants, (class == "missense" | class == "nonsense") & score > tpmt_lower_bound & score < 1), aes(x = end, y = position, fill = score)) +
+  geom_tile(data = subset(tpmt_variants, (class == "missense" | class == "nonsense") & score >= 1), aes(x = end, y = position, fill = score)) +
+  geom_tile(data = subset(tpmt_variants, (class == "missense" | class == "nonsense") & score <= tpmt_lower_bound), aes(x = end, y = position), fill = "blue") +
+  geom_tile(data = wtseqframe, aes(x = end, y= position, fill = score)) +
+  geom_point(data = wtseqframe, aes(x = end, y = position), shape = 15, size = 0.4) +
+  xlab(NULL) + scale_y_reverse(expand = c(0,0), breaks = c(1,seq(10,400,10))) +  ylab(NULL) +
+  scale_fill_gradientn(colours = c("blue","white","red"), values = rescale(c(tpmt_lower_bound,1,2)), limits=c(tpmt_lower_bound,2)) + 
+  theme(panel.background = element_rect(fill = "white"), legend.position = "none",
+        panel.grid.major = element_line(colour = "grey90"))
+ggsave(file = "Output/TPMT_full_variant_heatmap.pdf", tpmt_full_variant_heatmap, height = 3.6, width = 3)
+print(tpmt_full_variant_heatmap)
+```
+  
+Here is the TPMT density plot, with the single-amino acid variant color gradient serving as the heatmap color legend.  
+```{r TPMT density plot, fig.height = 1.5, fig.width = 3, warning = FALSE}
+tpmt_m <- ggplot(data = subset(tpmt_variants, class == "missense"), aes(x = score, y = ..scaled..))
+tpmt_m <- tpmt_m + geom_density()
+tpmt_q <- ggplot_build(tpmt_m)$data[[1]]
+tpmt_q_low <- subset(tpmt_q, x <= tpmt_lower_bound)
+tpmt_q_mid <- subset(tpmt_q, x > tpmt_lower_bound & x < 1)
+tpmt_q_high <- subset(tpmt_q, x >= 1)
+
+tpmt_heatmap_density <- ggplot() + 
+  geom_segment(data = tpmt_q_low, aes(x = x, y = y, xend = x, yend = 0), colour = "blue", size = 2) +
+  geom_segment(data = tpmt_q_mid, aes(x = x, y = y, xend = x, yend = 0, colour = x), size = 2) +
+  geom_segment(data = tpmt_q_high, aes(x = x, y = y, xend = x, yend = 0, colour = x), size = 2) +
+  geom_density(data = subset(tpmt_variants, class == "missense"), aes(x = score, y = ..scaled..), size = 1) + 
+  scale_color_gradientn(colours = c("blue","white","red"), values = rescale(c(tpmt_lower_bound,1,2)), limits=c(tpmt_lower_bound,2)) + 
+  scale_x_continuous(limits = c(-0.8, 2), breaks = seq(-0.4,2,0.4), expand = c(0,0)) +
+  scale_y_continuous(limits = c(0,1.2), breaks = c(0,0.4,0.8,1.2), expand = c(0,0.002)) + xlab("Variant abundance score") + ylab("Density") +
+  theme(panel.background = element_rect(fill = "white"), legend.position = "none") +
+  geom_density(data = subset(tpmt_variants, class == "synonymous"), aes(x = score, y = ..scaled..), color = "darkred", alpha = 0.4, size = 1, linetype = 2) +
+  geom_density(data = subset(tpmt_variants, class == "nonsense"), aes(x = score, y = ..scaled..), color = "darkblue", alpha = 0.4, size = 1, linetype = 2) +
+  geom_vline(xintercept = quantile(subset(tpmt_variants, class == "synonymous")$score,0.05), linetype = 2)
+ggsave(file = "Output/TPMT_heatmap_density.pdf", tpmt_heatmap_density, height = 1.2, width = 3)
+tpmt_heatmap_density
+```
+  
+The single amino acid variant distributions were compared between PTEN and TPMT, to see which protein had more single amino acid variants with scores outside of the range of the synonymous distribution.  
+```{r PTEN and TPMT missense density comparisons}
+pten_weighted_average_density_plot <- ggplot() + geom_vline(xintercept = subset(pten_variants, class == "wt")$median_w_ave, linetype = 3) + geom_density(data = subset(pten_variants, class == "synonymous"), aes(x = median_w_ave, y = ..scaled..), color = "red") + geom_density(data = subset(pten_variants, class == "nonsense" & position > 50 & position < 350), aes(x = median_w_ave, y = ..scaled..), color = "blue") + geom_density(data = subset(pten_variants, class == "missense"), aes(x = median_w_ave, y = ..scaled..), color = "black") + scale_x_continuous(limits = c(0.25, 1), expand = c(0,0)) + ylab("Density") + xlab("Median weighted average value")
+ggsave(file = "Output/PTEN_weighted_ave_smoothed_histograms.pdf", pten_weighted_average_density_plot, height = 1, width = 2.5)
+pten_weighted_average_density_plot
+
+tpmt_weighted_average_density_plot <- ggplot() + geom_vline(xintercept = subset(tpmt_variants, class == "wt")$median_w_ave, linetype = 3) + geom_density(data = subset(tpmt_variants, class == "synonymous"), aes(x = median_w_ave, y = ..scaled..), color = "red") + geom_density(data = subset(tpmt_variants, class == "nonsense" & position > 50 & position < 200), aes(x = median_w_ave, y = ..scaled..), color = "blue") + geom_density(data = subset(tpmt_variants, class == "missense"), aes(x = median_w_ave, y = ..scaled..), color = "black") + scale_x_continuous(limits = c(0.25, 1), expand = c(0,0)) + ylab("Density") + xlab("Median weighted average value")
+ggsave(file = "Output/TPMT_weighted_ave_smoothed_histograms.pdf", tpmt_weighted_average_density_plot, height = 1, width = 2.5)
+tpmt_weighted_average_density_plot
+
+combined_density_plot <- ggplot() + geom_density(data = subset(pten_variants, class == "missense" & !is.na(score)), aes(x = score, y = ..density../2), fill = "grey25", color = "black", alpha = 0.4) + 
+  geom_density(data = subset(tpmt_variants, class == "missense" & !is.na(score)), aes(x = score, y = ..density../2), fill = "dark green", color = "black", alpha = 0.4) +
+  xlab("Abundance score") + ylab("Density") + geom_vline(xintercept = quantile(subset(pten_variants, class == "synonymous")$score,0.05), linetype = 2) + geom_vline(xintercept = quantile(subset(tpmt_variants, class == "synonymous")$score,0.05), linetype = 2, color = "dark green")
+ggsave(file = "Output/Overlapping_missense_smoothed_histograms.pdf", combined_density_plot, height = 1.5, width = 2.5)
+combined_density_plot
+```
+  
+```{r Stats about what percentage of variants are below synonymous distributions, echo = FALSE}
+paste(round(nrow(subset(pten_variants, !is.na(score) & class == "missense" & score < quantile(subset(pten_variants, class == "synonymous")$score,0.05))) / nrow(subset(pten_variants, !is.na(score) & class == "missense")) * 100,1),
+" percent of PTEN missense variants have abundance scores below the synonymous distribution", sep = "")
+
+paste(round(nrow(subset(tpmt_variants, !is.na(score) & class == "missense" & score < quantile(subset(tpmt_variants, class == "synonymous")$score,0.05))) / nrow(subset(tpmt_variants, !is.na(score) & class == "missense")) * 100,1),
+" percent of TPMT missense variants have abundance scores below the synonymous distribution", sep = "")
+```
+  
+To complement the VAMP-seq data summary provided by the heatmap and density plots, I also made complementary plots showing the median score at each position (thus demonstrating tolerability of each position to substitution), and the PSIC score of evolutionary conservation of each position.  
+```{r Getting a moving average of the positional scores, fig.width = 1, fig.height = 8.35, warning = FALSE}
+ma <- function(x,n=3){filter(x,rep((1/n),n), sides=2)}
+
+pten_positions$score_moving_average <- ma(pten_positions$score)
+PTEN_positional_line_graph <- ggplot() + 
+  geom_point(data = subset(pten_positions, variants_scored >= 5), aes(x = position, y = score), size = 0.5, color = "black") +
+  geom_line(data = pten_positions, aes(x = position, y = score_moving_average), color = "black", size = 0.8, alpha = 0.5) +coord_flip() + 
+  scale_x_reverse(expand = c(0,0.05), breaks = c(1, seq(10,400,10))) + xlab(NULL) + ylab(NULL) + scale_y_continuous(breaks = c(0.24,0.5,0.75,1)) +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5))
+ggsave(file = "Output/PTEN_positional_line_graph.pdf", PTEN_positional_line_graph, height = 6.1, width = 1)
+PTEN_positional_line_graph
+
+tpmt_positions$score_moving_average <- ma(tpmt_positions$score)
+TPMT_positional_line_graph <- ggplot() + 
+  geom_point(data = subset(tpmt_positions, variants_scored >= 5), aes(x = position, y = score), size = 0.5, color = "black") +
+  geom_line(data = tpmt_positions, aes(x = position, y = score_moving_average), color = "black", size = 0.8, alpha = 0.5) +coord_flip() + 
+  scale_x_reverse(expand = c(0,0.05), breaks = c(1, seq(10,400,10))) + xlab(NULL) + ylab(NULL) +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5))
+ggsave(file = "Output/TPMT_positional_line_graph.pdf", TPMT_positional_line_graph, height = 3.6, width = 1)
+TPMT_positional_line_graph
+
+pten_positions$psic_moving_average <- ma(pten_positions$AA1_psic)
+PTEN_psic_line_graph <- ggplot() + 
+  geom_point(data = pten_positions, aes(x = position, y = AA1_psic), size = 0.5, color = "black") +
+  geom_line(data = pten_positions, aes(x = position, y = psic_moving_average), color = "black", size = 0.8, alpha = 0.5) +coord_flip() + 
+  scale_x_reverse(expand = c(0,0.05), breaks = c(1, seq(10,400,10))) + xlab(NULL) + ylab(NULL) +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5))
+ggsave(file = "Output/PTEN_psic_line_graph.pdf", PTEN_psic_line_graph, height = 6.1, width = 1)
+PTEN_psic_line_graph
+
+tpmt_positions$psic_moving_average <- ma(tpmt_positions$AA1_psic)
+TPMT_psic_line_graph <- ggplot() + 
+  geom_point(data = tpmt_positions, aes(x = position, y = AA1_psic), size = 0.5, color = "black") +
+  geom_line(data = tpmt_positions, aes(x = position, y = psic_moving_average), color = "black", size = 0.8, alpha = 0.5) +coord_flip() + 
+  scale_x_reverse(expand = c(0,0.05), breaks = c(1, seq(10,400,10))) + xlab(NULL) + ylab(NULL) +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5))
+ggsave(file = "Output/TPMT_psic_line_graph.pdf", TPMT_psic_line_graph, height = 3.6, width = 1)
+TPMT_psic_line_graph
+
+PTEN_positional_bar_graph <- ggplot() + 
+  geom_bar(data = pten_positions, aes(x = position, y = variants_scored), color = NA, fill = "grey70", stat = "identity") +
+  coord_flip() + 
+  scale_x_reverse(expand = c(0,0.05), breaks = c(1, seq(10,400,10))) + xlab(NULL) + ylab(NULL) + scale_y_continuous(breaks = c(0,5,10,15,19), limits = c(0,19), expand = c(0,0)) +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5))
+ggsave(file = "Output/PTEN_positional_bar_graph.pdf", PTEN_positional_bar_graph, height = 6.1, width = 0.8)
+PTEN_positional_bar_graph
+
+TPMT_positional_bar_graph <- ggplot() + 
+  geom_bar(data = tpmt_positions, aes(x = position, y = variants_scored), color = NA, fill = "grey70", stat = "identity") +
+  coord_flip() + 
+  scale_x_reverse(expand = c(0,0.05), breaks = c(1, seq(10,400,10))) + xlab(NULL) + ylab(NULL) + scale_y_continuous(breaks = c(0,5,10,15,19), limits = c(0,19), expand = c(0,0)) +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5))
+ggsave(file = "Output/TPMT_positional_bar_graph.pdf", TPMT_positional_bar_graph, height = 3.6, width = 0.8)
+TPMT_positional_bar_graph
+```
+  
+  
+I also made simple line graphs that show the domain architectures for PTEN and TPMT.  
+```{r Making a graph of the domain architecture, fig.width = 0.6, fig.height = 8.35}
+PTEN_architecture_schematic <- ggplot() + 
+  geom_rect(aes(xmin = 1, xmax = 15, ymin = 0, ymax = 1), color = NA, fill = "grey50", alpha = 0.5) +
+  geom_rect(aes(xmin = 15, xmax = 185, ymin = 0, ymax = 1), color = NA, fill = "#cee076", alpha = 0.5) +
+  geom_rect(aes(xmin = 185, xmax = 351, ymin = 0, ymax = 1), color = NA, fill = "#d28de8", alpha = 0.5) +
+  geom_rect(aes(xmin = 351, xmax = 400, ymin = 0, ymax = 1), color = NA, fill = "grey30", alpha = 0.5) +
+  geom_segment(aes(x = 1, y = 0, xend = 403), yend = 0, size = 2) +
+  scale_x_reverse(breaks = c(1,185,350), expand = c(0,0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0,0)) + xlab(NULL) + ylab(NULL) + coord_flip()
+ggsave(file = "Output/PTEN_architecture.pdf", PTEN_architecture_schematic, height = 6, width = 0.6)
+PTEN_architecture_schematic
+
+TPMT_architecture_schematic <- ggplot() + 
+  geom_rect(aes(xmin = 1, xmax = 245, ymin = 0, ymax = 1), color = NA, fill = "grey50", alpha = 0.5) +
+  geom_segment(aes(x = 1, y = 0, xend = 245), yend = 0, size = 2) +
+  scale_x_reverse(breaks = c(1,245), expand = c(0,0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0,0)) + xlab(NULL) + ylab(NULL) + coord_flip()
+ggsave(file = "Output/TPMT_architecture.pdf", TPMT_architecture_schematic, height = 3.6, width = 0.6)
+TPMT_architecture_schematic
+```
+  
+And lastly, a line graph that shows the basic secondary structural elements observed in the pdb of PTEN and TPMT.
+Blue is alpha helices, and pink is beta-strands. Black are positions resolved in the crystal structure, while grey is missing positions.  
+```{r Secondary structure schematic of PTEN and TPMT, fig.height = 8, fig.width = 0.6}
+PTEN_dssp_schematic <- ggplot() + 
+  geom_segment(aes(x = 1, y = 0, xend = max(pten_positions$position)), yend = 0, size = 1, color = "grey70") +
+  geom_point(data = subset(pten_positions, !is.na(xca)), aes(x = position, y = 0), color = "black", size = 1.8) +
+  geom_point(data = subset(pten_positions, sheet == 1), aes(x = position, y = 0), color = "pink", size = 1.5) +
+  geom_point(data = subset(pten_positions, helix == 1), aes(x = position, y = 0), color = "cyan", size = 1.5) +
+  scale_x_reverse(breaks = c(1,185,350), expand = c(0,0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0,0)) + xlab(NULL) + ylab(NULL) + coord_flip() +
+  theme(panel.border = element_blank(), axis.text.y = element_blank())
+ggsave(file = "Output/PTEN_dssp_schematic.pdf", PTEN_dssp_schematic, height = 6, width = 0.4)
+PTEN_dssp_schematic
+
+tpmt_dssp_schematic <- ggplot() + 
+  geom_segment(aes(x = 1, y = 0, xend = max(tpmt_positions$position)), yend = 0, size = 1, color = "grey70") +
+  geom_point(data = tpmt_positions, aes(x = position, y = 0), color = "black", size = 1.8) +
+  geom_point(data = subset(tpmt_positions, sheet == 1), aes(x = position, y = 0), color = "pink", size = 1.5) +
+  geom_point(data = subset(tpmt_positions, helix == 1), aes(x = position, y = 0), color = "cyan", size = 1.5) +
+  scale_x_reverse(breaks = c(1,100,200,245), expand = c(0,0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0,0)) + xlab(NULL) + ylab(NULL) + coord_flip() +
+  theme(panel.border = element_blank(), axis.text.y = element_blank())
+ggsave(file = "Output/TPMT_dssp_schematic.pdf", tpmt_dssp_schematic, height = 3.6, width = 0.3)
+tpmt_dssp_schematic
+```
+  
+# Validating the PTEN and TPMT VAMP-seq scores
+To validate the accuracy of the PTEN VAMP-seq data, I took two dozen variants that spanned the range of scores observed in VAMP-seq, engineered the mutations in a plasmid containing EGFP-tagged PTEN, recombined the cells, and assessed the EGFP/mCherry ratios in the recombined cells by flow cytometry.  
+```{r Abundance scores compared with individual EGFP/mCherry ratio assessments, fig.height = 8, fig.width = 8, warning = FALSE}
+pten_control_lm <- lm(formula = score ~ egfp_geomean_log10, data = pten_variants)
+
+PTEN_control_scatterplot <- ggplot() + geom_abline(slope = pten_control_lm$coefficients[[2]], intercept = pten_control_lm$coefficients[[1]], linetype = 2, color = "grey50") +
+  geom_point(data = pten_variants, aes(x = egfp_geomean_log10, y = score)) +
+  annotate("text", x = pten_variants$egfp_geomean_log10, y = pten_variants$score + 0.05, label = pten_variants$variant, color = "red", size = 2) +
+  xlab("Log10 normalized score (wt = 0)\nof EGFP/mCherry geomean") + ylab("Abundance score") +
+   annotate("text", x = -1.8, y = pten_variants[pten_variants$variant == "C124S","score"] + 0.1, label = paste("n: ", nrow(subset(pten_variants, !is.na(egfp_geomean_log10) & !is.na(score))), sep = ""), parse = TRUE) +
+  annotate("text", x = -1.8, y = pten_variants[pten_variants$variant == "C124S","score"], label = paste("r: ", round(cor(pten_variants$score, pten_variants$egfp_geomean_log10, use="pairwise.complete.obs", method = "pearson"),2), sep = ""), parse = TRUE) +
+  annotate("text", x = -1.8, y = pten_variants[pten_variants$variant == "C124S","score"] - 0.1, label = paste("rho:", round(cor(pten_variants$score, pten_variants$egfp_geomean_log10, use="pairwise.complete.obs", method = "spearman"),2), sep = ""), parse = TRUE) +
+  scale_y_continuous(expand = c(0,0))
+PTEN_control_scatterplot
+ggsave(file = "Output/PTEN_validation_individual.pdf", plot = PTEN_control_scatterplot, height =3, width = 3)
+```
+  
+```{r Print stats, echo = FALSE}
+paste("PTEN individual validation correlation, n:", nrow(subset(pten_variants, !is.na(score) & !is.na(egfp_geomean_log10))))
+paste("PTEN individual validation correlation, Pearson's R:", round(cor(pten_variants$score, pten_variants$egfp_geomean_log10, use="pairwise.complete.obs", method = "pearson"),2))
+paste("PTEN individual validation correlation, Spearman's rho:", round(cor(pten_variants$score, pten_variants$egfp_geomean_log10, use="pairwise.complete.obs", method = "spearman"),2))
+```
+  
+A similar analysis testing individual variants of TPMT.  
+```{r High-throughput scores compared to individual geometric means, fig.height = 4, fig.width = 4}
+tpmt_variants[tpmt_variants$variant == "WT","single_WTNorm"] <- 1
+
+tpmt_subset <- subset(tpmt_variants, !is.na(single_WTNorm) & !is.na(score))
+tpmt_subset$egfp_geomean_log10 <- log10(tpmt_subset$single_WTNorm)
+tpmt_control_lm <- lm(formula = score ~ egfp_geomean_log10, data = tpmt_subset)
+
+paste("TPMT individual validation correlation, n:", nrow(subset(tpmt_subset, !is.na(score) & !is.na(egfp_geomean_log10))))
+paste("TPMT individual validation correlation, Pearson's R:", round(cor(tpmt_subset$score, tpmt_subset$egfp_geomean_log10, use="pairwise.complete.obs", method = "pearson"),2))
+paste("TPMT individual validation correlation, Spearman's rho:", round(cor(tpmt_subset$score, tpmt_subset$egfp_geomean_log10, use="pairwise.complete.obs", method = "spearman"),2))
+
+TPMT_control_scatterplot <- ggplot() + geom_abline(slope = tpmt_control_lm$coefficients[[2]], intercept = tpmt_control_lm$coefficients[[1]], linetype = 2, color = "grey50") +
+  geom_point(data = tpmt_subset, aes(x = egfp_geomean_log10, y = score)) +
+  annotate("text", x = tpmt_subset$egfp_geomean_log10, y = tpmt_subset$score + 0.03, label = tpmt_subset$variant, color = "red", size = 2) +
+  xlab("Log10 normalized score (wt = 0)\nof EGFP/mCherry geomean") + ylab("Abundance score") +
+  annotate("text", x = min(tpmt_subset$egfp_geomean_log10) + 0.12, y = max(tpmt_subset$score), label = paste("n:", nrow(tpmt_subset), sep = ""), parse = TRUE) +
+  annotate("text", x = min(tpmt_subset$egfp_geomean_log10) + 0.12, y = max(tpmt_subset$score) - 0.1, label = paste("r:", round(sqrt(summary(tpmt_control_lm)$r.squared),2), sep = ""), parse = TRUE) +
+  annotate("text", x = min(tpmt_subset$egfp_geomean_log10) + 0.12, y = max(tpmt_subset$score) - 0.2, label = paste("rho:", round(cor(tpmt_subset$score, tpmt_subset$egfp_geomean_log10, use="pairwise.complete.obs", method = "spearman"),2), sep = ""), parse = TRUE) +
+  scale_y_continuous(expand = c(0,0.1)) + scale_x_continuous(expand = c(0,0.15))
+TPMT_control_scatterplot
+ggsave(file = "Output/TPMT_validation_individual.pdf", plot = TPMT_control_scatterplot, height =3, width = 3)
+```
+  
+As another test, PTEN VAMP-seq scores were compared with abundance phenotypes observed in western blots from published papers. See supplementary table 10 for a list of variant abundance phenotypes, along with the corresponding PMID of the report.  
+```{r Comparing PTEN abundance scores with western blots in the literature, fig.height = 4, fig.width = 3, warning = FALSE}
+pten_lit_destabilized_subset <- subset(pten_variants, !is.na(pten_variants$lit_destabilized))
+paste("There are",nrow(pten_lit_destabilized_subset),"PTEN variants being compared with abundance phenotypes in the literature")
+
+for(x in 1:nrow(pten_lit_destabilized_subset)){
+  if(pten_lit_destabilized_subset$lit_destabilized[x] == "no"){pten_lit_destabilized_subset$lit_destabilized[x] <- "WT-like in reports"}
+  if(pten_lit_destabilized_subset$lit_destabilized[x] == "conflict"){pten_lit_destabilized_subset$lit_destabilized[x] <- "Conflicting in reports"}
+  if(pten_lit_destabilized_subset$lit_destabilized[x] == "yes"){pten_lit_destabilized_subset$lit_destabilized[x] <- "Less present in reports"}
+}
+
+pten_lit_destabilized_subset$lit_destabilized <- factor(pten_lit_destabilized_subset$lit_destabilized, levels = c("WT-like in reports","Conflicting in reports","Less present in reports"))
+
+pten_lit_destabilized_plot <- ggplot() + 
+  geom_jitter(data = pten_lit_destabilized_subset, aes(x = pten_lit_destabilized_subset$lit_destabilized, y = score, color = pten_lit_destabilized_subset$lit_destabilized),size = 3, alpha = 0.5, width = 0.4) + 
+  xlab("Western blot phenotypes in literature") + ylab("Stability score from expts") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + geom_hline(yintercept = pten_synonymous_5th, linetype = 2)
+pten_lit_destabilized_plot
+ggsave(file = "Output/PTEN_literature_stability_plot.pdf", pten_lit_destabilized_plot, height = 3.5, width = 2)
+
+## Run a ratio permutation test to understand significance
+lit_destabilized_actual_ratio <- mean(subset(pten_lit_destabilized_subset, lit_destabilized == "Less present in reports")$score, na.rm = TRUE) / 
+  mean(subset(pten_lit_destabilized_subset, lit_destabilized == "WT-like in reports")$score, na.rm = TRUE)
+iterations <- 100
+lit_destabilized_starting_vector <- as.character(pten_lit_destabilized_subset$lit_destabilized)
+lit_stabilized_working_matrix <- data.frame(matrix(NA,ncol = 1, nrow = length(lit_destabilized_starting_vector)))
+lit_destabilized_ratio_matrix <- data.frame(matrix(NA,ncol = iterations, nrow = 1))
+
+for(y in 1:iterations){
+  for(x in 1:length(lit_destabilized_starting_vector)){
+    lit_stabilized_working_matrix[x,1] <- sample(lit_destabilized_starting_vector, 1, replace = FALSE)
+  }
+  lit_stabilized_working_matrix <- cbind(pten_lit_destabilized_subset[,c("variant","score")], lit_stabilized_working_matrix)
+  colnames(lit_stabilized_working_matrix) <- c("variant","score","class")
+  lit_destabilized_ratio_matrix[1,y] <- mean(subset(lit_stabilized_working_matrix, class == "Less present in reports")$score, na.rm = TRUE) / 
+    mean(subset(lit_stabilized_working_matrix, class == "WT-like in reports")$score, na.rm = TRUE)
+}
+paste(sum(lit_destabilized_ratio_matrix < lit_destabilized_actual_ratio),"of",iterations,"permutations were smaller")
+paste("The p value by the permutation test is less than ", round((sum(lit_destabilized_ratio_matrix < lit_destabilized_actual_ratio) + 1) / (iterations + 1), 5), sep = "")
+```
+  
+A similar analysis with TPMT. Please see supplementary table 10 to find a list of variants with WT-normalized published abundance phenotype, with the corresponding PMID of the report.  
+```{r Comparing High-throughput scores with classifications based on western blots in literature, fig.height = 4, fig.width = 3}
+tpmt_lit_destabilized_subset <- subset(tpmt_variants, !is.na(tpmt_variants$published_western) & (tpmt_variants$published_western != "NaN") & !is.na(score))
+paste("There are",nrow(tpmt_lit_destabilized_subset),"TPMT variants being compared with abundance phenotypes in the literature")
+
+tpmt_lit_destabilized_plot <- ggplot() + #geom_boxplot(data = tpmt_lit_destabilized_subset, aes(x = tpmt_lit_destabilized_subset$published_western, y = score)) +
+  geom_point(data = tpmt_lit_destabilized_subset, aes(x = tpmt_lit_destabilized_subset$published_western, y = score), size = 3, alpha = 0.5) + 
+  xlab("Described stability in the literature\n(western blots)") + ylab("Stability score from expts") +
+  theme(legend.position = "none") + geom_hline(yintercept = 0.5, linetype = 2)
+tpmt_lit_destabilized_plot
+ ggsave(file = "Output/TPMT_literature_stability_plot.pdf", tpmt_lit_destabilized_plot, height = 2.5, width = 2.5)
+```
+  
+  
+# Biochemical analyses
+  
+This chunk of code compares how PTEN VAMP-seq abundance scores correlate with melting temperatures tested with purified PTEN protein in vitro (PMID: 25647146).  
+```{r Comparing PTEN biophysical stability (Melting point of purified protein), fig.width = 4, fig.height = 4, warning = FALSE}
+pten_melting_temp_subset <- subset(pten_variants, !is.na(pten_variants$tm))
+pten_melting_temp_lm <- lm(formula = tm ~ score, data = pten_melting_temp_subset)
+
+melting_plot <- ggplot(data = pten_melting_temp_subset, aes(x = tm, y = score)) + geom_smooth(method = "lm", se = FALSE, color = "grey75", linetype = 2) + 
+  geom_point() + annotate("text", x = pten_melting_temp_subset$tm, y = pten_melting_temp_subset$score + 0.05, label = pten_melting_temp_subset$variant, color = "red") +
+  ylab("Abundance score\n") + xlab("\nMelting temperature (Johnston et al, 2015)") + scale_x_continuous(expand= c(0.1,0.1)) +
+  annotate("text", x = min(pten_melting_temp_subset$tm), y = pten_variants[pten_variants$variant == "C124S","score"], label = paste("r:", round(sqrt(summary(pten_melting_temp_lm)$r.squared),2)), hjust = 0, parse = TRUE) +
+  annotate("text", x = min(pten_melting_temp_subset$tm), y = pten_variants[pten_variants$variant == "C124S","score"] - 0.1, label = paste("rho:", round(cor(pten_melting_temp_subset$score, pten_melting_temp_subset$tm, use="pairwise.complete.obs", method = "spearman"),2)), hjust = 0, parse = TRUE)
+ggsave(file = "Output/PTEN_melting_temp_plot.pdf", melting_plot, height = 3, width = 3)
+melting_plot
+```
+  
+```{r Print PTEN melting temperature correlations}
+paste("PTEN melting temperature and abundance score correlation, Pearson's R:", round(cor(pten_melting_temp_subset$score, pten_melting_temp_subset$tm, use="pairwise.complete.obs", method = "pearson"),2))
+paste("PTEN melting temperature and abundance score correlation, Spearman's rho:", round(cor(pten_melting_temp_subset$score, pten_melting_temp_subset$tm, use="pairwise.complete.obs", method = "spearman"),2))
+```
+  
+We looked for some basic patterns of similarity or difference in the tolerability of PTEN and TPMT to single amino acid subsitutions. Mutation of WT hydrophobic aromatic, methionine, or long nonpolar aliphatic amino acids produced the largest decreases in abundance for both proteins.  
+```{r Plots for stability effect by residue, fig.height = 3, fig.width = 2, warning = FALSE}
+pten_residue_median <- ddply(subset(pten_variants, class == "missense" & !(is.na(score)))[,c("start","score")], "start", numcolwise(median))
+tpmt_residue_median <- ddply(subset(tpmt_variants, class == "missense" & !(is.na(score)))[,c("start","score")], "start", numcolwise(median))
+start_residue_median <- merge(pten_residue_median, tpmt_residue_median, by = "start")
+colnames(start_residue_median) <- c("start","pten_residue_median","tpmt_residue_median")
+
+starting_residue_median_scatterplot <- ggplot() + geom_point(data = start_residue_median, aes(x = pten_residue_median, y = tpmt_residue_median), alpha = 0.4) + 
+  annotate("text", x = start_residue_median$pten_residue_median, y = start_residue_median$tpmt_residue_median + 0.015, label = start_residue_median$start) +
+  xlab("PTEN residue") + ylab("TPMT residue") + scale_y_continuous(limits = c(0.5, 1), breaks = seq(0.5, 1, 0.1)) + scale_x_continuous(limits = c(0.2, 1), breaks = seq(0.2, 1, 0.1)) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+ggsave(file = "Output/Starting_residue_median_scatterplot.pdf", starting_residue_median_scatterplot, height = 2.5, width = 1.75)
+starting_residue_median_scatterplot
+
+pten_residue_median <- ddply(subset(pten_variants, class == "missense" & !(is.na(score)))[,c("end","score")], "end", numcolwise(median))
+tpmt_residue_median <- ddply(subset(tpmt_variants, class == "missense" & !(is.na(score)))[,c("end","score")], "end", numcolwise(median))
+end_residue_median <- merge(pten_residue_median, tpmt_residue_median, by = "end")
+colnames(end_residue_median) <- c("end","pten_residue_median","tpmt_residue_median")
+
+ending_residue_median_scatterplot <- ggplot() + geom_point(data = end_residue_median, aes(x = pten_residue_median, y = tpmt_residue_median), alpha = 0.4) + 
+  annotate("text", x = end_residue_median$pten_residue_median, y = end_residue_median$tpmt_residue_median + 0.015, label = end_residue_median$end) +
+  xlab("PTEN residue") + ylab("TPMT residue") + scale_y_continuous(limits = c(0.58, 0.95), breaks = seq(0.6, 1, 0.1)) + scale_x_continuous(limits = c(0.5, 0.85), breaks = seq(0.5, 1, 0.1)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+ggsave(file = "Output/Ending_residue_median_scatterplot.pdf", ending_residue_median_scatterplot, height = 2.5, width = 1.75)
+ending_residue_median_scatterplot
+```
+  
+We then determined which features correlated with abundance score for the two different proteins using Spearman's correlation coefficients. In fact, WT amino acid hydrophobicity was negatively correlated with abundance score (Fig. 3b, WT hydroΦ), whereas mutant amino acid hydrophobicity was positively correlated with abundance score (MT hydroΦ). Conversely, mutations of WT amino acids with high relative solvent accessibility (RSA), polarity (WT Polarity), and crystal-structure temperature factor (B-factor), all features associated with polar residues present on the protein surface, were associated with high abundance scores.  
+```{r Looking at biophysical annotation correlations with score, warning = FALSE}
+pten_variants_min <- subset(pten_variants, !is.na(score) & !is.na(rsa) & !is.na(evolutionary_coupling_avg) & class == "missense")
+specific_features <- c("variant","class","score","rsa","abs_tco","kappa","alpha","phi","psi","bfactor","grantham","hydro1","hydro2","hydrodiff","vol1","vol2","voldiff","polarity1","polarity2","polaritydiff","weight1","weight2","weightdiff","crowding","AA1_PI","AA2_PI","deltaPI","AA1_psic","AA2_psic","delta_psic","evolutionary_coupling_avg")
+pten_input_output <- pten_variants_min[,append(c("variant","score"),specific_features)]
+pten_spearman_frame <- data.frame(matrix(nrow = length(specific_features) - 5, ncol = 2, "NA"))
+colnames(pten_spearman_frame) <- c("feature","spearman_r")
+pten_spearman_frame$feature <- as.character(pten_spearman_frame$feature)
+pten_spearman_frame$spearman_r <- as.numeric(pten_spearman_frame$spearman_r)
+
+y = 1
+for(x in 4:length(specific_features)){
+  pten_spearman_frame[y,"feature"] <- specific_features[x]
+  pten_spearman_frame[y,"spearman_r"] <- cor(pten_input_output[,specific_features[x]], pten_input_output$score, method = "spearman")
+  y = y + 1
+}
+pten_spearman_frame$abs_spearman_r <- abs(as.numeric(pten_spearman_frame$spearman_r))
+pten_spearman_frame <- pten_spearman_frame[order(-pten_spearman_frame$abs_spearman_r),]
+
+tpmt_variants_min <- subset(tpmt_variants, !is.na(score) & !is.na(rsa) & !is.na(evolutionary_coupling_avg) & class == "missense")
+specific_features <- c("variant","class","score","rsa","abs_tco","kappa","alpha","phi","psi","bfactor","grantham","hydro1","hydro2","hydrodiff","vol1","vol2","voldiff","polarity1","polarity2","polaritydiff","weight1","weight2","weightdiff","crowding","AA1_PI","AA2_PI","deltaPI","AA1_psic","AA2_psic","delta_psic","evolutionary_coupling_avg")
+tpmt_input_output <- tpmt_variants_min[,append(c("variant","score"),specific_features)]
+tpmt_spearman_frame <- data.frame(matrix(nrow = length(specific_features) - 5, ncol = 2, "NA"))
+colnames(tpmt_spearman_frame) <- c("feature","spearman_r")
+tpmt_spearman_frame$feature <- as.character(tpmt_spearman_frame$feature)
+tpmt_spearman_frame$spearman_r <- as.numeric(tpmt_spearman_frame$spearman_r)
+
+y = 1
+for(x in 4:length(specific_features)){
+  tpmt_spearman_frame[y,"feature"] <- specific_features[x]
+  tpmt_spearman_frame[y,"spearman_r"] <- cor(tpmt_input_output[,specific_features[x]], tpmt_input_output$score, method = "spearman")
+  y = y + 1
+}
+tpmt_spearman_frame$abs_spearman_r <- abs(as.numeric(tpmt_spearman_frame$spearman_r))
+tpmt_spearman_frame <- tpmt_spearman_frame[order(-tpmt_spearman_frame$abs_spearman_r),]
+
+spearman_frame_merged <- merge(pten_spearman_frame[c("feature","spearman_r")], tpmt_spearman_frame[c("feature","spearman_r")], by = "feature")
+colnames(spearman_frame_merged) <- c("feature","pten_spearman_r","tpmt_spearman_r")
+spearman_frame_merged$mean = (spearman_frame_merged$pten_spearman_r + spearman_frame_merged$tpmt_spearman_r)/2
+spearman_frame_merged$abs_spearman_r <- abs(as.numeric(spearman_frame_merged$mean))
+spearman_frame_merged <- spearman_frame_merged[order(-spearman_frame_merged$abs_spearman_r),]
+
+evolutionary_sequence <- c("AA1_psic","AA2_psic","delta_psic","evolutionary_coupling_avg")
+primary_sequence <- c("hydro1","hydro2","hydrodiff","vol1","vol2","grantham","AA1_PI","AA2_PI","polarity1","polarity2","polaritydiff")
+structural_sequence <- c("rsa","bfactor","crowding","abs_tco","substr_dist","alpha","phi","psi")
+plotlabel_mergeframe <- subset(spearman_frame_merged, feature %in% c("rsa","bfactor","hydro2","evolutionary_coupling_avg","substr_dist","delta_psic","abs_tco","grantham","polarity1","polaritydiff","AA1_psic","AA2_psic","hydro1","hydrodiff","crowding"))
+
+Both_spearman_features <- ggplot() + geom_hline(yintercept = 0) + geom_vline(xintercept = 0) +
+  geom_point(data = subset(spearman_frame_merged, feature %in% evolutionary_sequence), aes(x = pten_spearman_r, y = tpmt_spearman_r), color = "red") +
+  geom_point(data = subset(spearman_frame_merged, feature %in% primary_sequence), aes(x = pten_spearman_r, y = tpmt_spearman_r), color = "cyan") +
+  geom_point(data = subset(spearman_frame_merged, feature %in% structural_sequence), aes(x = pten_spearman_r, y = tpmt_spearman_r), color = "blue") +
+  geom_text(data = plotlabel_mergeframe, aes(x = pten_spearman_r, y = tpmt_spearman_r + 0.01), label = plotlabel_mergeframe$feature, size = 2.5)
+ggsave(file = "Output/Both_spearman_features.pdf", Both_spearman_features, height = 3, width = 3)
+Both_spearman_features
+```
+  
+Looking at how the PTEN and TPMT positional median scores correlate with secondary structure and PSIC measurements of evolutionary conservation.  
+```{r Getting Spearmans R for positional medians and evolutionary conservation, echo = FALSE, warning = FALSE}
+pten_psic_scatterplot <- ggplot() + geom_point(data = pten_positions, aes(x = score, AA1_psic), alpha = 0.4) + xlab("PTEN abundance score") + ylab("PTEN PSIC")
+ggsave("Output/PTEN_psic_scatterplot.pdf", pten_psic_scatterplot, height = 2, width = 3.5)
+pten_psic_scatterplot
+
+tpmt_psic_scatterplot <- ggplot() + geom_point(data = tpmt_positions, aes(x = score, AA1_psic), alpha = 0.4) + xlab("TPMT abundance score") + ylab("TPMT PSIC")
+ggsave("Output/TPMT_psic_scatterplot.pdf", tpmt_psic_scatterplot, height = 2, width = 3.5)
+tpmt_psic_scatterplot
+
+paste("Spearman's rho for PTEN AA1_psic and score:",round(cor(pten_positions$AA1_psic, pten_positions$score, use="pairwise.complete.obs", method = "spearman"),2))
+paste("Spearman's rho for TPMT AA1_psic and score:",round(cor(tpmt_positions$AA1_psic, tpmt_positions$score, use="pairwise.complete.obs", method = "spearman"),2))
+```
+  
+```{r Structure score plot, warning = FALSE}
+pten_secondary_structure_score_plot <- ggplot() + geom_jitter(data = subset(pten_positions, helix != 1 & sheet !=  1 & !is.na(xca)), aes(x = "3. No secondary structure", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "3. No secondary structure", y = median(subset(pten_positions, helix != 1 & sheet !=  1 & !is.na(xca))$score, na.rm = TRUE), ymin = median(subset(pten_positions, helix != 1 & sheet !=  1 & !is.na(xca))$score, na.rm = TRUE), ymax = median(subset(pten_positions, helix != 1 & sheet !=  1 & !is.na(xca))$score, na.rm = TRUE)), color = "red") +
+  geom_jitter(data = subset(pten_positions, helix == 1), aes(x = "1. Alpha helix", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "1. Alpha helix", y = median(subset(pten_positions, helix == 1)$score, na.rm = TRUE), ymin = median(subset(pten_positions, helix == 1)$score, na.rm = TRUE), ymax = median(subset(pten_positions, helix == 1)$score, na.rm = TRUE)), color = "red") +
+  geom_jitter(data = subset(pten_positions, sheet == 1), aes(x = "2. Beta sheet", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "2. Beta sheet", y = median(subset(pten_positions, sheet == 1)$score, na.rm = TRUE), ymin = median(subset(pten_positions, sheet == 1)$score, na.rm = TRUE), ymax = median(subset(pten_positions, sheet == 1)$score, na.rm = TRUE)), color = "red") + 
+  geom_jitter(data = subset(pten_positions, is.na(xca)), aes(x = "4. Unresolved in structure", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "4. Unresolved in structure", y = median(subset(pten_positions, is.na(xca))$score, na.rm = TRUE), ymin = median(subset(pten_positions, is.na(xca))$score, na.rm = TRUE), ymax = median(subset(pten_positions, is.na(xca))$score, na.rm = TRUE)), color = "red") + 
+  xlab(NULL) + ylab("PTEN abundance score") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + scale_y_continuous(breaks = seq(0,1.2,0.2)) +
+  annotate("text", x = "1. Alpha helix", y = 1.4, label = paste("n:",nrow(subset(pten_positions, helix == 1)))) +
+  annotate("text", x = "2. Beta sheet", y = 1.4, label = paste("n:",nrow(subset(pten_positions, sheet == 1)))) +
+  annotate("text", x = "3. No secondary structure", y = 1.4, label = paste("n:",nrow(subset(pten_positions, helix != 1 & sheet !=  1 & !is.na(xca))))) + 
+  annotate("text", x = "4. Unresolved in structure", y = 1.4, label = paste("n:",nrow(subset(pten_positions, is.na(xca)))))
+ggsave("Output/PTEN_secondary_structure_score_plot.pdf", pten_secondary_structure_score_plot, height = 3.5, width = 4)
+pten_secondary_structure_score_plot
+
+tpmt_secondary_structure_score_plot <- ggplot() + geom_jitter(data = subset(tpmt_positions, helix != 1 & sheet !=  1), aes(x = "3. No secondary structure", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "3. No secondary structure", y = median(subset(tpmt_positions, helix != 1 & sheet !=  1)$score, na.rm = TRUE), ymin = median(subset(tpmt_positions, helix != 1 & sheet !=  1)$score, na.rm = TRUE), ymax = median(subset(tpmt_positions, helix != 1 & sheet !=  1)$score, na.rm = TRUE)), color = "red") +
+  geom_jitter(data = subset(tpmt_positions, helix == 1), aes(x = "1. Alpha helix", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "1. Alpha helix", y = median(subset(tpmt_positions, helix == 1)$score, na.rm = TRUE), ymin = median(subset(tpmt_positions, helix == 1)$score, na.rm = TRUE), ymax = median(subset(tpmt_positions, helix == 1)$score, na.rm = TRUE)), color = "red") +
+  geom_jitter(data = subset(tpmt_positions, sheet == 1), aes(x = "2. Beta sheet", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "2. Beta sheet", y = median(subset(tpmt_positions, sheet == 1)$score, na.rm = TRUE), ymin = median(subset(tpmt_positions, sheet == 1)$score, na.rm = TRUE), ymax = median(subset(tpmt_positions, sheet == 1)$score, na.rm = TRUE)), color = "red") + 
+  geom_jitter(data = subset(tpmt_positions, is.na(xca)), aes(x = "4. Unresolved in structure", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "4. Unresolved in structure", y = median(subset(tpmt_positions, is.na(xca))$score, na.rm = TRUE), ymin = median(subset(tpmt_positions, is.na(xca))$score, na.rm = TRUE), ymax = median(subset(tpmt_positions, is.na(xca))$score, na.rm = TRUE)), color = "red") + 
+  xlab(NULL) + ylab("TPMT abundance score") + scale_y_continuous(breaks = seq(0,1.2,0.2)) + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + scale_y_continuous(breaks = seq(0,1.2,0.2)) +
+  annotate("text", x = "1. Alpha helix", y = 1.4, label = paste("n:",nrow(subset(tpmt_positions, helix == 1)))) +
+  annotate("text", x = "2. Beta sheet", y = 1.4, label = paste("n:",nrow(subset(tpmt_positions, sheet == 1)))) +
+  annotate("text", x = "3. No secondary structure", y = 1.4, label = paste("n:",nrow(subset(tpmt_positions, helix != 1 & sheet !=  1 & !is.na(xca))))) + 
+  annotate("text", x = "4. Unresolved in structure", y = 1.4, label = paste("n:",nrow(subset(tpmt_positions, is.na(xca)))))
+ggsave("Output/TPMT_secondary_structure_score_plot.pdf", tpmt_secondary_structure_score_plot, height = 3.5, width = 4)
+tpmt_secondary_structure_score_plot
+```
+  
+#### The following chunks of code create .pml files that can be used to visualize the abundance data directly in Pymol (just drag the pml files into Pymol)
+
+This chunk of code imports the pdb for PTEN (1d5r), removes the water molecules, and sets the basic visual motifs. Lastly, it creates a standard vantage point used in all of the subsequent .pml files for PTEN.  
+```{r PTEN pymol pml export setup, echo=FALSE, fig.height = 1, fig.width = 2}
+# Create a vector of commands common to all pymol scripting I'll be doing
+pymol_setup <- c()
+# Import the PDB and do initial setup steps
+pymol_setup <- append(pymol_setup, c("reinitialize","fetch 1d5r, async = 0","bg_color white","set opaque_background, 0","hide all","set ray_trace_mode, 1"))
+# Create individual objects for PTEN and the substrate
+pymol_setup <- append(pymol_setup, c("create pten, not resn TLA and not resn HOH","create substrate, resn TLA","delete 1d5r","color grey80, pten","show spheres, substrate","color magenta, substrate","show sticks, substrate","show cartoon, pten","orient pten"))
+# Set the view to a common useful orientation
+pymol_pten_standard_view<-c("orient pten","set_view (-0.143308833,0.549923658,-0.822817922,-0.982117832,-0.181517780,0.049738724,-0.122004509,0.815239608,0.566107035,0.001983175,-0.000477783,-151.571762085,38.322704315,79.638130188,31.967512131,76.972015381,216.736602783,-20.000000000)")
+```
+  
+A custom coloring dataframe was used to get the colorscales used in this analysis script and display them in the pymol representations of PTEN.  
+```{r PTEN colorscale for Pymol, echo = FALSE, warning = FALSE}
+## [[2]] Colorscales from low to mid and [[3]] Colorscales from mid to high
+pymol_colorframe <- rbind(ggplot_build(pten_heatmap_density)$data[[2]][,c("x","colour")], ggplot_build(pten_heatmap_density)$data[[3]][,c("x","colour")])
+colnames(pymol_colorframe) <- c("pymol_scores","pymol_colors")
+
+pymol_colorframe$pymol_scores <- as.numeric(pymol_colorframe$pymol_scores)
+pten_positions$color <- NA
+
+for(x in 1:nrow(subset(pten_positions, !is.na(score)))){
+  if(!is.na(pten_positions$score[x])){
+  pten_positions$color[x] <- pymol_colorframe[which.min(abs(pymol_colorframe$pymol_scores - pten_positions$score[x])),"pymol_colors"]
+}}
+
+pymol_colorframe$r <- NA
+pymol_colorframe$g <- NA
+pymol_colorframe$b <- NA
+
+for(x in 1:nrow(pymol_colorframe)){
+  pymol_colorframe$r[x] <- col2rgb(pymol_colorframe$pymol_colors[x])[1]
+  pymol_colorframe$g[x] <- col2rgb(pymol_colorframe$pymol_colors[x])[2]
+  pymol_colorframe$b[x] <- col2rgb(pymol_colorframe$pymol_colors[x])[3]
+}
+
+pymol_color_setup_vector <- c()
+for(x in 1:nrow(pymol_colorframe)){
+  pymol_color_setup_vector <- append(pymol_color_setup_vector, paste("set_color ",pymol_colorframe$pymol_colors[x],", [",pymol_colorframe$r[x],",",pymol_colorframe$g[x],",",pymol_colorframe$b[x],"]",sep=""))
+}
+
+pymol_color_score_vector <- c()
+for(x in 1:nrow(pten_positions)){
+  pymol_color_score_vector <- append(pymol_color_score_vector, paste("color ",pten_positions$color[x],", resi ", pten_positions$position[x], " and pten",sep=""))
+}
+```
+  
+To visualize the 20% of positions least tolerant to substitution, these positions were dispalyed as a semi-transparent surface representation.  
+```{r PTEN pymol most destabilized positions}
+# Make a new vector for the 20% lowest positional scores
+pymol_lowest_scores <- c()
+# Make a command that creates a new object of only the 20 % most destabilization-prone positions
+pymol_lowest_scores <- append(pymol_lowest_scores, paste("create lowest_20, pten and resi ",gsub(", ","+",toString(subset(pten_positions, score < quantile(pten_positions$score, 0.2, na.rm = TRUE))$position)),"", sep= ""))
+# Make the destabilized positions a semi-transparent surface representation
+pymol_lowest_scores <- append(pymol_lowest_scores, c("show surface, lowest_20","set transparency, 0.5, lowest_20","orient pten"))
+
+fileConn<-file("Output/Pymol_1A_PTEN_lowest_scores.pml")
+writeLines(c(pymol_setup,pymol_color_setup_vector,pymol_color_score_vector,pymol_lowest_scores,pymol_pten_standard_view,
+             paste("png ",markdown_directory,"/Output/Pymol_1A_PTEN_lowest_scores.png, width=10cm, dpi=300, ray=1",sep="")
+             ), fileConn)
+close(fileConn)
+```
+  
+#### Now let's see if I can combine both the low-score hbonds and salt bridges to make groupings in 3-dimensional space
+First, I am selecting for PTEN positions that were expected to form hydrogen bonds or salt bridges. Here are some stats on how many of these positions existed in the PTEN crystal structure, as well as how many had (positional) low abundance scores, and shows these score distributions of these two classes of positions on a plot.  
+```{r PTEN looking at the number of potential polar contacts, echo = FALSE}
+print(paste("There are", nrow(subset(pten_positions, schbond_unique_partners >= 1 | saltbridge_unique_partners >= 1)), "positions potentially involved in h-bond or salt bridge interactions"))
+print(paste("There are", nrow(subset(pten_positions, (schbond_unique_partners > 0 | saltbridge_unique_partners > 0) & (abundance_class == "intolerant"))), "positions potentially involved in h-bond or salt bridge interactions that are intolerant to mutation"))
+```
+  
+```{r making the saltbridge plot} 
+schbond_saltbridge_pten_low_abundance_positions <- subset(pten_positions, (saltbridge_unique_partners >= 1 | schbond_unique_partners >= 1) & abundance_class == "intolerant")
+schbond_saltbridge_pten_not_low_abundance_positions <- subset(pten_positions, (saltbridge_unique_partners >= 1 | schbond_unique_partners >= 1) & (abundance_class != "intolerant" | is.na(abundance_class)))
+
+pten_saltbridge_hbond_score_plot <- ggplot() + 
+  geom_jitter(data = schbond_saltbridge_pten_low_abundance_positions, aes(x = "1. Substitution\nintolerant", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "1. Substitution\nintolerant", y = median(schbond_saltbridge_pten_low_abundance_positions$score, na.rm = TRUE), ymin = median(schbond_saltbridge_pten_low_abundance_positions$score, na.rm = TRUE), ymax = median(schbond_saltbridge_pten_low_abundance_positions$score, na.rm = TRUE)), color = "red") +
+  geom_jitter(data = schbond_saltbridge_pten_not_low_abundance_positions, aes(x = "2. Remaining", y = score), alpha = 0.2) +
+  geom_crossbar(aes(x = "2. Remaining", y = median(schbond_saltbridge_pten_not_low_abundance_positions$score, na.rm = TRUE), ymin = median(schbond_saltbridge_pten_not_low_abundance_positions$score, na.rm = TRUE), ymax = median(schbond_saltbridge_pten_not_low_abundance_positions$score, na.rm = TRUE)), color = "red") + annotate("text", x = "1. Substitution\nintolerant", y = 1.3, label = paste("n:",nrow(schbond_saltbridge_pten_low_abundance_positions))) + 
+  annotate("text", x = "2. Remaining", y = 1.3, label = paste("n:",nrow(schbond_saltbridge_pten_not_low_abundance_positions))) + 
+  xlab(NULL) + ylab("PTEN abundance score") + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+ggsave("Output/PTEN_saltbridge_hbond_score_plot.pdf", pten_saltbridge_hbond_score_plot, height = 2.5, width = 1.2)
+pten_saltbridge_hbond_score_plot
+```
+  
+This chunk of code performs heirarchical clustering of these substitution intolerant positions containing potential hydrogen bonds and salt bridges, so find regions of the PTEN protein that may be particularly depending on these polar interactions for folding. The frequencies that these positions are observed in COSMIC are also shown as a separate plot.  
+```{r PTEN combining Hbonds and Saltbridges, warning = FALSE}
+schbond_saltbridge_pten_positions <- subset(pten_positions, (saltbridge_unique_partners >= 1 | schbond_unique_partners >= 1) & abundance_class == "intolerant")
+schbond_saltbridge_positions <- schbond_saltbridge_pten_positions[,c("sc_xca","sc_yca","sc_zca")]
+rownames(schbond_saltbridge_positions) <- schbond_saltbridge_pten_positions$position
+
+schbond_saltbridge_frame <- data.frame(matrix(ncol = nrow(schbond_saltbridge_pten_positions), nrow = nrow(schbond_saltbridge_pten_positions)))
+colnames(schbond_saltbridge_frame) <- schbond_saltbridge_pten_positions$position; rownames(schbond_saltbridge_frame) <- schbond_saltbridge_pten_positions$position
+
+schbond_saltbridge_frame2 <- dist(schbond_saltbridge_positions, method = "euclidean")
+fit <- hclust(schbond_saltbridge_frame2, method="ward.D2") 
+
+dhc <- as.dendrogram(fit)
+ddata <- dendro_data(dhc, type = "rectangle")
+
+schbond_saltbridge_frame2_cut <- cutree(fit, h = 11)
+schbond_saltbridge_frame2_cut <- data.frame(schbond_saltbridge_frame2_cut)
+schbond_saltbridge_frame2_cut$label <- rownames(schbond_saltbridge_frame2_cut)
+colnames(schbond_saltbridge_frame2_cut) <- c("group","label")
+
+ddata_labels <- data.frame(ddata$labels)
+ddata_labels <- merge(ddata_labels, schbond_saltbridge_frame2_cut, by = "label")
+ddata_labels$group <- as.integer(ddata_labels$group)
+ddata_labels$label <- as.character(ddata_labels$label)
+ddata_labels$color_group <- 0
+color_group_counter = 1
+
+for(group_number in sort(unique(as.integer(ddata_labels$group)))){
+  query_group <- pten_positions[pten_positions$position %in% ddata_labels[ddata_labels$group == group_number,"label"],c("sc_xca","sc_yca","sc_zca")]
+  if(nrow(query_group) > 1){
+    query_matrix <- matrix(NA, nrow = nrow(query_group), ncol = nrow(query_group))
+    colnames(query_matrix) <- ddata_labels[ddata_labels$group == group_number,"label"]
+    rownames(query_matrix) <- ddata_labels[ddata_labels$group == group_number,"label"]
+    
+    for(x in 1:nrow(query_group)){
+      for(y in 1:nrow(query_group)){
+        query_matrix[x,y] <- sqrt((query_group[x,"sc_xca"] - query_group[y,"sc_xca"])^2 + (query_group[x,"sc_yca"] - query_group[y,"sc_yca"])^2 + (query_group[x,"sc_zca"] - query_group[y,"sc_zca"])^2)
+      }
+    }
+    if(max(query_matrix) < 11){ddata_labels[ddata_labels$group == group_number,"color_group"] <- color_group_counter; color_group_counter = color_group_counter + 1}
+  }
+}
+
+ddata_labels$color_group_factor <- as.factor(ddata_labels$color_group)
+sc_interaction_color_groups <- c("0"="grey50","1"="salmon","2"="brown","3"="limegreen","4"="violet","5"="orange","6"="yellow","7"="pink","8"="darkgreen")
+
+Destabilizing_hbond_saltbridge_tree <- ggplot(segment(ddata)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  geom_text(data = ddata_labels, aes(x = x, y = y-0.2, label = label, hjust = 0, vjust = 0.5, angle = -90, colour = color_group_factor)) +
+  geom_hline(yintercept = 11, linetype = 2) + xlab(NULL) + ylab(NULL) + scale_x_continuous(breaks = NULL) + scale_y_continuous(expand = c(0,15)) + theme(axis.text.x = element_blank()) + scale_colour_manual(values = sc_interaction_color_groups)
+ggsave(file = "Output/PTEN_destabilizing_hbond_saltbridge_tree.pdf", Destabilizing_hbond_saltbridge_tree, height = 3, width = 6)
+Destabilizing_hbond_saltbridge_tree
+
+ddata_labels2 <- data.frame("position" = ddata_labels$label, "group" = ddata_labels$color_group)
+ddata_labels2 <- merge(ddata_labels2, pten_positions[,c("position","cosmic_count")], by = "position", all.x = TRUE)
+ddata_labels2 <- ddata_labels2[order(-ddata_labels2$cosmic_count),]
+ddata_labels2[is.na(ddata_labels2)] <- 0
+ddata_labels2 <- ddata_labels2[order(ddata_labels2$group),]
+
+PTEN_destabilizing_hbond_cosmic_counts <- ggplot() + geom_point(data = ddata_labels2, aes(x = group, y = cosmic_count), alpha = 0.5) + 
+  geom_text(data = subset(ddata_labels2, cosmic_count > 2), aes(x = group, y = cosmic_count), label = subset(ddata_labels2, cosmic_count > 2)[,"position"], hjust = 0, position = position_nudge(x = 0.1)) + ylab("Frequency of mutation in COSIMC") + xlab("Cluster group of mutation intolerant positions\nlikely involved in polar contacts") + 
+  scale_x_continuous(breaks = seq(1,8)) + scale_y_continuous(breaks = seq(0,20,2))
+ggsave(file = "Output/PTEN_destabilizing_hbond_cosmic_counts.pdf", PTEN_destabilizing_hbond_cosmic_counts, height = 2.5, width = 3)
+PTEN_destabilizing_hbond_cosmic_counts
+
+PTEN_all_cosmic_counts <- ggplot() + scale_x_continuous(limit = c(0,35)) + 
+  geom_histogram(data = pten_positions, aes(x = cosmic_count), alpha = 0.5, binwidth = 1) + 
+  geom_text(data = subset(pten_positions, cosmic_count > 7 & (saltbridge_unique_partners >= 1 | schbond_unique_partners >= 1) & abundance_class == "intolerant" & ! position %in% c(252,277)), aes(x = cosmic_count, y = 15, label = position, angle = 45), color = "red") +
+  geom_text(data = subset(pten_positions, cosmic_count > 7 & (saltbridge_unique_partners >= 1 | schbond_unique_partners >= 1) & abundance_class == "intolerant" & position %in% c(252,277)), aes(x = cosmic_count, y = 25, label = position, angle = 45), color = "red") +
+  geom_point(data = subset(pten_positions, cosmic_count > 7 & (saltbridge_unique_partners >= 1 | schbond_unique_partners >= 1) & abundance_class == "intolerant"), aes(x = cosmic_count, y = 10), color = "red", size = 0.5) +
+  xlab("Number of mutations in COSMIC") + ylab("Number of residues") +
+  annotate("text", x = 32, y = 30, label = "Not shown:\nPosition 173: 93\nPosition 130: 355", angle = 90, hjust = 0)
+ggsave(file = "Output/PTEN_cosmic_counts.pdf", PTEN_all_cosmic_counts, height = 3, width = 3.5)
+PTEN_all_cosmic_counts
+```
+  
+```{r Paste the low abundance saltbridge positions in COSMIC, echo = FALSE}
+paste("The number of mutations in COSMIC for position 24 and 26 are",toString(subset(pten_positions, position %in% c(24, 26))$cosmic_count))
+paste("The number of mutations in COSMIC for positions 66, 68, 107, 111, 115 are",toString(subset(pten_positions, position %in% c(66,68,107,111,115))$cosmic_count))
+paste("The number of mutations in COSMIC for position 153 and 172 are",toString(subset(pten_positions, position %in% c(153, 172))$cosmic_count))
+paste("The number of mutations in COSMIC for position 170 and 329 are",toString(subset(pten_positions, position %in% c(170, 329))$cosmic_count))
+paste("The number of mutations in COSMIC for positions 177, 252, 276, 277 are",toString(subset(pten_positions, position %in% c(177,252,276,277))$cosmic_count))
+paste("The number of mutations in COSMIC for position 179 and 184 are",toString(subset(pten_positions, position %in% c(179, 184))$cosmic_count))
+paste("The number of mutations in COSMIC for positions 254, 256, and 269 are",toString(subset(pten_positions, position %in% c(254,256,269))$cosmic_count))
+paste("The number of mutations in COSMIC for positions 322, 331, and 334 are",toString(subset(pten_positions, position %in% c(322,331,334))$cosmic_count))
+```
+  
+This chunk of code makes a .pml file for displaying these potentially critical h-bonds and salt bridges in Pymol, using the same grouping and color scheme used in the above plots.  
+```{r PTEN making a pml file for the Hbonds and Salt Bridges}
+Pymol_hbonds_saltbridges_vector <- c()
+Pymol_hbonds_saltbridges_vector <- append(Pymol_hbonds_saltbridges_vector, c(paste("create sc_hbonds_unstable, resi ",gsub(", ", "+",toString(subset(pten_positions, schbond_unique_partners >= 1 & abundance_class == "intolerant")$position))," and not name c+n+o", sep = ""), "show sticks, sc_hbonds_unstable", "show surface, sc_hbonds_unstable", "set transparency, 0.2, sc_hbonds_unstable"))
+
+Pymol_hbonds_saltbridges_vector <- append(Pymol_hbonds_saltbridges_vector, c(paste("create saltbridge_unstable, resi ",gsub(", ","+",toString(subset(pten_positions, saltbridge_unique_partners >= 1 & abundance_class == "intolerant")$position))," and not name c+n+o", sep = ""), "show sticks, saltbridge_unstable", "show surface, saltbridge_unstable", "set transparency, 0.2, saltbridge_unstable"))
+    
+group_color_vector <- c("salmon","brown","limegreen","violet","orange","yellow","hotpink","forest")
+color_group_commands <- c()
+for(x in 1:max(ddata_labels$color_group)){
+  color_group_commands <- append(color_group_commands, paste("select group", x, ", (sc_hbonds_unstable or saltbridge_unstable) and resi ",gsub(", ","+",toString(ddata_labels[ddata_labels$color_group == x,"label"])), " and not name c+n+o; color ",group_color_vector[x],", group", x, sep=""))
+}
+
+fileConn<-file("Output/Pymol_2_PTEN_Hbonds_saltbridges.pml")
+writeLines(c(pymol_setup,pymol_color_setup_vector,pymol_color_score_vector,Pymol_hbonds_saltbridges_vector,pymol_pten_standard_view,color_group_commands
+             ,paste("png ",markdown_directory,"/Output/Pymol_2_PTEN_Hbonds_saltbridges.png, width=10cm, dpi=300, ray=1",sep="")
+             ), fileConn)
+close(fileConn)
+```
+  
+#### Figuring out which PTEN positions have high scores
+  
+We identified positions in PTEN that had mean abundance scores higher than WT. Some of these enhanced-abundance positions were in structurally resolved regions, and many of them were within 7 Å of known phospholipid-binding positions. In comparison, far fewer of all structurally resolved PTEN positions were within 7 Å of phospholipid-binding positions (Supplementary Fig. 4e). Thus, positions with abundance-enhancing variants tended to be near the membrane-proximal face of PTEN, and included those important for binding PIP3, PIP2 or PI(3)P.  
+```{r High score analysis, warning = FALSE}
+pten_high_score_positions <- subset(pten_positions, abundance_class == "enhanced")
+paste("There are",nrow(pten_high_score_positions),"positions in PTEN that had mean abundance scores higher than WT")
+pten_high_score_positions_structure <- subset(pten_high_score_positions, !is.na(xca))
+pten_high_score_positions_nostructure <- subset(pten_high_score_positions, is.na(xca))
+
+pten_membrane_positions <- c(14,47,130,seq(260,268))
+pten_high_score_positions_temp_matrix <- data.frame(matrix(NA, nrow = nrow(pten_high_score_positions_structure), ncol = length(pten_membrane_positions)))
+for(row_counter in 1:nrow(pten_high_score_positions_structure)){
+  for(col_counter in 1:length(pten_membrane_positions)){
+    #print(paste(row_counter,col_counter))
+    pten_high_score_positions_temp_matrix[row_counter,col_counter] <- sqrt((subset(pten_positions, position == pten_membrane_positions[col_counter])$xca - pten_high_score_positions_structure[row_counter,"xca"])^2 +
+      (subset(pten_positions, position == pten_membrane_positions[col_counter])$yca - pten_high_score_positions_structure[row_counter,"yca"])^2 +
+      (subset(pten_positions, position == pten_membrane_positions[col_counter])$zca - pten_high_score_positions_structure[row_counter,"zca"])^2)
+  }
+}
+pten_high_score_positions_temp_matrix$row_min <- apply(pten_high_score_positions_temp_matrix,1,min)
+
+## This is for comparison
+pten_positions_structure <- subset(pten_positions, !is.na(xca))
+pten_positions_temp_matrix <- data.frame(matrix(NA, nrow = nrow(pten_positions_structure), ncol = length(pten_membrane_positions)))
+for(row_counter in 1:nrow(pten_positions_structure)){
+  for(col_counter in 1:length(pten_membrane_positions)){
+    #print(paste(row_counter,col_counter))
+    pten_positions_temp_matrix[row_counter,col_counter] <- sqrt((subset(pten_positions, position == pten_membrane_positions[col_counter])$xca - pten_positions_structure[row_counter,"xca"])^2 +
+      (subset(pten_positions, position == pten_membrane_positions[col_counter])$yca - pten_positions_structure[row_counter,"yca"])^2 +
+      (subset(pten_positions, position == pten_membrane_positions[col_counter])$zca - pten_positions_structure[row_counter,"zca"])^2)
+  }
+}
+pten_positions_temp_matrix$row_min <- apply(pten_positions_temp_matrix,1,min)
+
+## Plot the two minimum distances
+High_score_position_distances_plot <- ggplot() + geom_histogram(data = pten_positions_temp_matrix, aes(x = row_min), alpha = 0.5, binwidth = 1) +
+  geom_histogram(data = pten_high_score_positions_temp_matrix, aes(x = row_min), fill = "red", color = "red", alpha = 0.5, binwidth = 1) + scale_x_continuous(breaks = c(0,5,10,20,30)) + geom_vline(xintercept = 7)
+ggsave(file = "Output/High_score_position_distances_plot.pdf", High_score_position_distances_plot, height = 2.3, width = 3)
+High_score_position_distances_plot
+```
+  
+```{r Pasting elevated score stats}
+paste(round(sum(pten_high_score_positions_temp_matrix$row_min < 7) / length(pten_high_score_positions_temp_matrix$row_min),3)*100, "percent of high score positions were within 6.5 angstroms of a known active site or membrane localization position")
+paste(round(sum(pten_positions_temp_matrix$row_min < 7) / length(pten_positions_temp_matrix$row_min),3)*100, "percent of all PTEN positions were within 6.5 angstroms of a known active site or membrane localization position")
+```
+  
+```{r Making pml file for highest scores positions}
+# Make a new vector for reference positions
+pymol_ref_positions <- c()
+# Make a command that creates a new object of only the 20 % most destabilization-prone positions
+pymol_ref_positions <- append(pymol_ref_positions, paste("create ref_positions, pten and resi ",gsub(", ","+",toString(pten_membrane_positions)),"", sep= ""))
+# Make the reference positions a sphere represntation
+pymol_ref_positions <- append(pymol_ref_positions, c("show spheres, ref_positions","set sphere_scale, 0.75, ref_positions","color cyan, ref_positions","orient pten"))
+
+# Make a new vector for the 20% lowest positional scores
+pymol_highest_scores <- c()
+# Make a command that creates a new object of only the 20 % most destabilization-prone positions
+pymol_highest_scores <- append(pymol_highest_scores, paste("create higher_than_wt, pten and resi ",gsub(", ","+",toString(subset(pten_positions, abundance_class == "enhanced")$position)),"", sep= ""))
+# Make the destabilized positions a semi-transparent surface representation
+pymol_highest_scores <- append(pymol_highest_scores, c("show spheres, higher_than_wt","set sphere_transparency = 0.5, higher_than_wt","color red, higher_than_wt", "orient pten"))
+
+fileConn<-file("Output/Pymol_1B_PTEN_highest_scores.pml")
+writeLines(c(pymol_setup,pymol_color_setup_vector,pymol_color_score_vector,pymol_ref_positions,pymol_highest_scores,pymol_pten_standard_view,
+             paste("png ",markdown_directory,"/Output/Pymol_1B_PTEN_highest_scores.png, width=10cm, dpi=300, ray=1",sep="")
+             ), fileConn)
+close(fileConn)
+```
+  
+  
+#### Phosphorylation
+Phosphorylation at various sites of the unstructured C-terminal tail of PTEN is known to be involved in negatively regulating its activity. We observed that phosphomimetic substitutions at the S385 PTEN C-terminal regulatory phosphosite exhibited the highest abundance scores, whereas positively charged substitutions had low scores, supporting the impact of phosphorylation at this site on abundance.  
+```{r Phosphorylation, warning = FALSE, fig.height = 2, fig.width = 1.6}
+pten_phosphorylation_sites <- c(385)  ## residues 229,321,336 were outside this region c(366,370,380,382,383,385)
+test <- pten_variants[pten_variants$position %in% pten_phosphorylation_sites,]
+nonphospho_mimetic <- subset(test, (end %in% c("K","R")))[,c("variant","start","end","position","score")]
+nonphospho_mimetic$color <- "blue"
+phospho_mimetic <- subset(test, end %in% c("E","D"))[,c("variant","start","end","position","score")]
+phospho_mimetic$color <- "red"
+phospho_frame <- rbind(nonphospho_mimetic, phospho_mimetic)
+
+orig_phosphosite <- subset(pten_variants, (position %in% pten_phosphorylation_sites) & class == "synonymous")[,c("variant","start","end","position","score")]
+orig_phosphosite$color <- "black"
+
+all_frame <- subset(pten_variants, (position %in% pten_phosphorylation_sites) & (end %in% c("A","G","M","N","Q","C")) & (class == "missense"))[,c("variant","start","end","position","score")]
+all_frame$label <- factor(paste(all_frame$start,all_frame$position,sep=""), levels = c("S385")) #"S229","T321","Y336","T366","S370","S380","T382","T383",
+
+phosphosite_plot <- ggplot() + geom_point(data = all_frame, aes(x = label, y = score), color = "grey50") +
+  geom_point(data = orig_phosphosite, aes(x = factor(paste(orig_phosphosite$start,orig_phosphosite$position,sep="")), y = score, color = as.character(orig_phosphosite$color)), color = as.character(orig_phosphosite$color)) +
+  geom_point(data = phospho_frame, aes(x = factor(paste(phospho_frame$start,phospho_frame$position,sep="")), y = score, color = as.character(phospho_frame$color)), color = as.character(phospho_frame$color)) +
+  geom_text(data = phospho_frame, aes(x = factor(paste(phospho_frame$start,phospho_frame$position,sep="")), y = score, label = end), size = 3, position = position_nudge(x = 0.3)) +
+  theme(panel.grid.major.x = element_blank(), panel.grid.major.y = element_line( size=.1, color="black" )) +
+  xlab("Phosphorylation\nsite") + ylab("Abundance score")
+ggsave(file = "Output/PTEN_Phosphosite_plot.pdf", phosphosite_plot, height = 2, width = 1.6)
+phosphosite_plot
+```
+  
+  
+#### Doing a similar kind of pml creation for TPMT
+First, show positional median representatives in Pymol.  
+```{r TPMT pymol pml export setup, echo=FALSE, fig.height = 1, fig.width = 2}
+# Create a vector of commands common to all pymol scripting I'll be doing
+pymol_tpmt_setup <- c()
+# Import the PDB and do initial setup steps
+pymol_tpmt_setup <- append(pymol_tpmt_setup, c("reinitialize","fetch 2h11, async = 0","bg_color white","set opaque_background, 0","hide all","set ray_trace_mode, 1"))
+# Create individual objects for tpmt and the substrate
+pymol_tpmt_setup <- append(pymol_tpmt_setup, c("create tpmt, chain A and not resn SAH and not resn B3P and not resn HOH","color grey80, tpmt","create substrate, resi 300 and resn SAH","delete 2h11","show spheres, substrate","color magenta, substrate","show sticks, substrate","show cartoon, tpmt","orient tpmt"))
+# Set the view to a common useful orientation
+pymol_tpmt_standard_view<-c("orient tpmt"#,"set_view (-0.174539238,0.983615994,-0.045013949,-0.935415626,-0.179911613,-0.304323375,-0.307439744,-0.011007670,0.951497555,0.000000000,0.000000000,-133.546875000,24.336597443,15.257915497,16.412631989,105.289375305,161.804382324,-20.000000000)"
+                       )
+```
+  
+Making a colorscale for coloring my Pymol.  
+```{r TPMT colorscale for Pymol, echo = FALSE, warning = FALSE}
+## [[2]] Colorscales from low to mid and [[3]] Colorscales from mid to high
+pymol_tpmt_colorframe <- rbind(ggplot_build(tpmt_heatmap_density)$data[[2]][,c("x","colour")], ggplot_build(tpmt_heatmap_density)$data[[3]][,c("x","colour")])
+colnames(pymol_tpmt_colorframe) <- c("pymol_scores","pymol_colors")
+
+pymol_tpmt_colorframe$pymol_scores <- as.numeric(pymol_tpmt_colorframe$pymol_scores)
+tpmt_positions$color <- NA
+
+for(x in 1:nrow(subset(tpmt_positions, !is.na(score)))){
+  if(!is.na(tpmt_positions$score[x])){
+  tpmt_positions$color[x] <- pymol_tpmt_colorframe[which.min(abs(pymol_tpmt_colorframe$pymol_scores - tpmt_positions$score[x])),"pymol_colors"]
+}}
+
+pymol_tpmt_colorframe$r <- NA
+pymol_tpmt_colorframe$g <- NA
+pymol_tpmt_colorframe$b <- NA
+
+for(x in 1:nrow(pymol_tpmt_colorframe)){
+  pymol_tpmt_colorframe$r[x] <- col2rgb(pymol_tpmt_colorframe$pymol_colors[x])[1]
+  pymol_tpmt_colorframe$g[x] <- col2rgb(pymol_tpmt_colorframe$pymol_colors[x])[2]
+  pymol_tpmt_colorframe$b[x] <- col2rgb(pymol_tpmt_colorframe$pymol_colors[x])[3]
+}
+
+pymol_tpmt_color_setup_vector <- c()
+for(x in 1:nrow(pymol_tpmt_colorframe)){
+  pymol_tpmt_color_setup_vector <- append(pymol_tpmt_color_setup_vector, paste("set_color ",pymol_tpmt_colorframe$pymol_colors[x],", [",pymol_tpmt_colorframe$r[x],",",pymol_tpmt_colorframe$g[x],",",pymol_tpmt_colorframe$b[x],"]",sep=""))
+}
+
+pymol_tpmt_color_score_vector <- c()
+for(x in 1:nrow(tpmt_positions)){
+  pymol_tpmt_color_score_vector <- append(pymol_tpmt_color_score_vector, paste("color ",tpmt_positions$color[x],", resi ", tpmt_positions$position[x], " and tpmt",sep=""))
+}
+```
+  
+Making a surface representation of the 20% positions with the lowest and highest scores, as well as positions with a high percentage of highly stabilizing tpmt_variants.  
+```{r TPMT pymol most destabilized positions}
+# Make a new vector for the 20% lowest positional scores
+pymol_tpmt_lowest_scores <- c()
+# Make a command that creates a new object of only the 25% most destabilization-prone positions
+pymol_tpmt_lowest_scores <- append(pymol_tpmt_lowest_scores, paste("create lowest_20, tpmt and resi ",gsub(", ","+",toString(subset(tpmt_positions, score < quantile(tpmt_positions$score, 0.2, na.rm = TRUE))$position)),"", sep= ""))
+# Make the destabilized positions a black surface representation as well
+pymol_tpmt_lowest_scores <- append(pymol_tpmt_lowest_scores, c("show surface, lowest_20","set transparency, 0.5, lowest_20","orient tpmt"))
+
+# Do the same thing for the 20% highest positional scores
+pymol_tpmt_highest_scores <- c()
+# Make a command that creates a new object of only the 25% most destabilization-prone positions
+pymol_tpmt_highest_scores <- append(pymol_tpmt_highest_scores, paste("create highest_20, tpmt and resi ",gsub(", ","+",toString(subset(tpmt_positions, score > quantile(tpmt_positions$score, 0.8, na.rm = TRUE))$position)),"", sep= ""))
+# Make the destabilized positions a black surface representation as well
+pymol_tpmt_highest_scores <- append(pymol_tpmt_highest_scores, c("show surface, highest_20","set transparency, 0.5, highest_20","orient tpmt"))
+
+# Find positions with very high single variant scores, which will be shown as spheres
+# Only select for missense tpmt_variants that are higher than the top 10% synonymous tpmt_variants
+# Many are involved in lipid binding (2015, Wei, Roberts, JBiolChem)
+variant_tpmt_high_scores <- subset(tpmt_variants, class == "missense" & score > quantile(subset(tpmt_variants, class == "synonymous")$score, 0.90))
+row.names(variant_tpmt_high_scores) <- NULL
+
+tpmt_positions_stable <- data.frame(table(subset(variant_tpmt_high_scores, class == "missense")$position))
+tpmt_positions_stable <- tpmt_positions_stable[order(tpmt_positions_stable$Freq,decreasing = TRUE),]
+row.names(tpmt_positions_stable) <- NULL
+colnames(tpmt_positions_stable) <- c("position","count_10percent")
+
+tpmt_positions_all <- data.frame(table(subset(tpmt_variants, class == "missense")$position))
+colnames(tpmt_positions_all) <- c("position","count_all")
+
+tpmt_positional_stable_frequency <- merge(tpmt_positions_stable, tpmt_positions_all, by = "position", all.x = TRUE)
+tpmt_positional_stable_frequency$stable_frequency <- tpmt_positional_stable_frequency$count_10percent / tpmt_positional_stable_frequency$count_all
+tpmt_positional_stable_frequency <- subset(tpmt_positional_stable_frequency, count_all >= 5)
+tpmt_positional_stable_frequency <- tpmt_positional_stable_frequency[order(-tpmt_positional_stable_frequency$count_10percent),]
+tpmt_positional_stable_frequency <- tpmt_positional_stable_frequency[order(-tpmt_positional_stable_frequency$stable_frequency),]
+
+tpmt_positional_stable_frequency <- subset(tpmt_positional_stable_frequency, stable_frequency > quantile(tpmt_positional_stable_frequency$stable_frequency, 1/4))
+tpmt_positional_stable_frequency <- tpmt_positional_stable_frequency[order(tpmt_positional_stable_frequency$position),]
+
+pymol_most_stabilizing_variations_vector <- c()
+pymol_most_stabilizing_variations_vector <- append(pymol_most_stabilizing_variations_vector, c(paste("select stabilizing_tpmt_variants, highest_20 and resi ", gsub(", ","+",toString(tpmt_positional_stable_frequency$position)),sep=""),"set sphere_scale, 1.25, stabilizing_tpmt_variants","show spheres, stabilizing_tpmt_variants","color red, stabilizing_tpmt_variants","set sphere_transparency=0.2, stabilizing_tpmt_variants"))
+
+fileConn<-file("Output/Pymol_3_TPMT_lowest_highest_scores.pml")
+writeLines(c(pymol_tpmt_setup,pymol_tpmt_color_setup_vector,pymol_tpmt_color_score_vector,pymol_tpmt_lowest_scores,pymol_tpmt_standard_view,
+             paste("png ",markdown_directory,"/Output/Pymol_3_TPMT_lowest_highest_scores.png, width=10cm, dpi=300, ray=1",sep="")
+             ), fileConn)
+close(fileConn)
+```
+  
+Now let's see if I can combine both the low-score hbonds and salt bridges to make groupings in 3-dimensional space.  
+```{r TPMT combining Hbonds and Saltbridges}
+schbond_saltbridge_tpmt_positions <- subset(tpmt_positions, (saltbridge_unique_partners >= 1 & abundance_class == "intolerant") | (schbond_unique_partners >= 1 & abundance_class == "intolerant"))
+schbond_saltbridge_positions <- schbond_saltbridge_tpmt_positions[,c("sc_xca","sc_yca","sc_zca")]
+rownames(schbond_saltbridge_positions) <- schbond_saltbridge_tpmt_positions$position
+
+schbond_saltbridge_frame <- data.frame(matrix(ncol = nrow(schbond_saltbridge_tpmt_positions), nrow = nrow(schbond_saltbridge_tpmt_positions)))
+colnames(schbond_saltbridge_frame) <- schbond_saltbridge_tpmt_positions$position; rownames(schbond_saltbridge_frame) <- schbond_saltbridge_tpmt_positions$position
+
+for(x in 1:nrow(schbond_saltbridge_frame)){
+  for(y in 1:nrow(schbond_saltbridge_frame)){
+    schbond_saltbridge_frame[x,y] <- sqrt((abs(schbond_saltbridge_tpmt_positions$sc_xca[x] - schbond_saltbridge_tpmt_positions$sc_xca[y]))^2 + 
+                                            (abs(schbond_saltbridge_tpmt_positions$sc_yca[x] - schbond_saltbridge_tpmt_positions$sc_yca[y]))^2 + 
+                                            (abs(schbond_saltbridge_tpmt_positions$sc_zca[x] - schbond_saltbridge_tpmt_positions$sc_zca[y]))^2)
+  }
+}
+
+schbond_saltbridge_frame2 <- dist(schbond_saltbridge_positions, method = "euclidean")
+fit <- hclust(schbond_saltbridge_frame2, method="ward.D2") 
+
+#ggdendrogram(fit, rotate = FALSE, size = 2)
+dhc <- as.dendrogram(fit)
+ddata <- dendro_data(dhc, type = "rectangle")
+
+schbond_saltbridge_frame2_cut <- cutree(fit, h = 10)
+schbond_saltbridge_frame2_cut <- data.frame(schbond_saltbridge_frame2_cut)
+schbond_saltbridge_frame2_cut$label <- rownames(schbond_saltbridge_frame2_cut)
+colnames(schbond_saltbridge_frame2_cut) <- c("group","label")
+
+ddata_labels <- data.frame(ddata$labels)
+ddata_labels <- merge(ddata_labels, schbond_saltbridge_frame2_cut, by = "label")
+ddata_labels$group <- as.factor(ddata_labels$group)
+
+Destabilizing_hbond_saltbridge_tree <- ggplot(segment(ddata)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) + 
+  geom_text(data = ddata_labels, aes(x = x, y = y-0.2, label = label, vjust = 1, color = group)) +
+  geom_hline(yintercept = 10, linetype = 2) + xlab(NULL) + ylab(NULL) + scale_x_continuous(breaks = NULL) + theme(axis.text.x = element_blank())
+ggsave(file = "Output/TPMT_Destabilizing_hbond_saltbridge_tree.pdf", Destabilizing_hbond_saltbridge_tree, height = 2.5, width = 5)
+Destabilizing_hbond_saltbridge_tree
+
+mergy <- merge(schbond_saltbridge_frame, schbond_saltbridge_frame2_cut, by = "row.names")
+group1 <- subset(mergy, group == 1)
+```
+  
+Finding residues invoved in Hbonds or Salt Bridges with really low scores.  
+```{r TPMT making a pml file for the Hbonds and Salt Bridges}
+pymol_tpmt_hbonds_saltbridges_vector <- c()
+pymol_tpmt_hbonds_saltbridges_vector <- append(pymol_tpmt_hbonds_saltbridges_vector, c(paste("create sc_hbonds_unstable, resi ",gsub(", ", "+",toString(subset(tpmt_positions, schbond_unique_partners >= 1 & abundance_class == "low")$position))," and not name c+n+o", sep = ""), "show sticks, sc_hbonds_unstable", "show surface, sc_hbonds_unstable", "set transparency, 0.2, sc_hbonds_unstable"))
+
+pymol_tpmt_hbonds_saltbridges_vector <- append(pymol_tpmt_hbonds_saltbridges_vector, c(paste("create saltbridge_unstable, resi ",gsub(", ","+",toString(subset(tpmt_positions, saltbridge_unique_partners >= 1 & abundance_class == "low")$position))," and not name c+n+o", sep = ""), "show sticks, saltbridge_unstable", "show surface, saltbridge_unstable", "set transparency, 0.2, saltbridge_unstable"))
+
+group_color_vector <- c("tv_red","slate","sand","limegreen","violet","orange","yellow")
+pymol_tpmt_color_group_commands <- c()
+for(x in 1:max(schbond_saltbridge_frame2_cut$group)){
+  pymol_tpmt_color_group_commands <- append(pymol_tpmt_color_group_commands, paste("select group", x, ", (sc_hbonds_unstable or saltbridge_unstable) and resi ",gsub(", ","+",toString(subset(schbond_saltbridge_frame2_cut, group == x)$label)), " and not name c+n+o; color ",group_color_vector[x],", group", x, sep=""))
+}
+
+tpmt_hbonds_fileConn<-file("Output/Pymol_4_TPMT_Hbonds_saltbridges.pml")
+writeLines(c(pymol_tpmt_setup,pymol_tpmt_color_setup_vector,pymol_tpmt_color_score_vector,pymol_tpmt_hbonds_saltbridges_vector,pymol_tpmt_standard_view,pymol_tpmt_color_group_commands,
+             paste("png ",markdown_directory,"/Output/Pymol_4_TPMT_Hbonds_saltbridges.png, width=10cm, dpi=300, ray=1",sep="")), tpmt_hbonds_fileConn)
+close(tpmt_hbonds_fileConn)
+```
+  
+  
+# PTEN Classification Graphs  
+```{r Initial setup of PTEN classification analyses}
+custom_colorscale <- c("low" = "#3366ff","possibly_low" = "#b3d9ff","possibly_wt-like" = "#ffcccc","wt-like" = "#F8766D","dominant_negative" = "yellow","high" = "brown","unknown" = "grey75")
+pten_variants[is.na(pten_variants$abundance_class),"abundance_class"] <- "unknown"
+```
+  
+This is a plot showing some representative variants from each abundance class.  
+```{r Example classification}
+errorbar_example_dataframe <- data.frame(c(subset(pten_variants, abundance_class == "low")[1,c("score","lower_ci","upper_ci","variant","expts")]))
+errorbar_example_dataframe$variant <- as.character(errorbar_example_dataframe$variant)
+errorbar_example_dataframe <- rbind(errorbar_example_dataframe, c(subset(pten_variants, abundance_class == "possibly_low")[5,c("score","lower_ci","upper_ci","variant","expts")]))
+errorbar_example_dataframe <- rbind(errorbar_example_dataframe, c(subset(pten_variants, abundance_class == "possibly_wt-like")[1,c("score","lower_ci","upper_ci","variant","expts")]))
+errorbar_example_dataframe <- rbind(errorbar_example_dataframe, c(subset(pten_variants, abundance_class == "wt-like")[2,c("score","lower_ci","upper_ci","variant","expts")]))
+rownames(errorbar_example_dataframe) <- c("low","possibly low","possibly wt-like","wt-like")
+
+
+
+
+classification_example_plot <- ggplot() + 
+  geom_density(data = subset(pten_variants, class == "synonymous"), aes(x = score, y = ..scaled..), fill = "red", alpha = 0.5) +
+  geom_point(data = errorbar_example_dataframe, aes(x = as.numeric(score), y = c(1.5,2,2.5,3))) +
+  geom_errorbarh(aes(y = c(1.5,2,2.5,3), x = as.numeric(errorbar_example_dataframe$lower_ci), xmin = as.numeric(errorbar_example_dataframe$lower_ci), xmax = as.numeric(errorbar_example_dataframe$upper_ci)), linetype = 1) +
+  annotate("text", x = errorbar_example_dataframe$score, y = c(1.5,2,2.5,3)+0.15, label = errorbar_example_dataframe$variant) + 
+  annotate("text", x = 1, y = 1.2, label = "WT-synonyms", color = "red") + 
+  annotate("text", x = 0.02, y = c(1.5,2,2.5,3), label = c("Low","Possibly Low","Possibly WT-like","WT-like"), hjust = 0) + 
+  xlab("PTEN abundance score") + theme(panel.grid.major.y = element_blank()) + geom_vline(xintercept = quantile(subset(pten_variants, class == "synonymous")$score,0.05), linetype = 2) + ylab("WT synonym density") +
+  scale_y_continuous(breaks = c(0,0.5,1))
+ggsave(file = "Output/PTEN_classification_example_plot.pdf", classification_example_plot, height = 3, width = 5)
+print(classification_example_plot)
+```
+  
+#### PTEN ClinVar analysis
+  
+```{r Getting some PTEN clinvar pathog stats, echo = FALSE}
+paste("Total missense variants possible by SNV:",nrow(subset(pten_variants, class == "missense" & snv == 1)))
+paste("Total missense variants possible by SNV with a score in our experiment:",nrow(subset(pten_variants, class == "missense" & snv == 1 & !is.na(score))))
+
+paste("Total (germline) missense PTEN variants in Clinvar:",nrow(subset(pten_variants, snv == 1 & class == "missense" & (clinvar_pathog == 1 | clinvar_likely_pathog == 1 | clinvar_benign == 1 | clinvar_likely_benign == 1 | clinvar_uncertain))))
+paste("Total (germline) missense PTEN variants in Clinvar also found in our experiment:",nrow(subset(pten_variants, snv == 1 & class == "missense" & (clinvar_pathog == 1 | clinvar_likely_pathog == 1 | clinvar_benign == 1 | clinvar_likely_benign == 1 | clinvar_uncertain) & !is.na(score))))
+paste("Total (germline) missense PTEN variants in Clinvar also found in our experiment with low abundance:",round(nrow(subset(pten_variants, snv == 1 & class == "missense" & !is.na(score) & abundance_class == "low"))/nrow(subset(pten_variants, snv == 1 & class == "missense" & !is.na(score))),2))
+
+paste("Of Clinvar annotated, the number of known pathogenic variants:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_pathog == 1)))
+paste("Of known pathogenic, the number observed in our experiment:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_pathog == 1 & !is.na(score))))
+paste("Of known pathogenic in our experiment, the number that were low abundance:",nrow(subset(pten_variants, class == "missense" & clinvar_pathog == 1 & !is.na(score) & abundance_class == "low")))
+paste("The fraction is then:",round(nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_pathog == 1 & !is.na(score) & abundance_class == "low"))/nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_pathog == 1 & !is.na(score))),2))
+paste("Of known pathogenic in our experiment, the number that were possibly low abundance:",nrow(subset(pten_variants, class == "missense" & clinvar_pathog == 1 & !is.na(score) & abundance_class == "possibly_low")))
+paste("Of known pathogenic in our experiment, the remaining variants not of low abundance or possibly low abundance:",toString(subset(pten_variants, class == "missense" & clinvar_pathog == 1 & !is.na(score) & (abundance_class != "possibly_low" & abundance_class != "low"))[,"variant"]))
+
+paste("Of Clinvar annotated, the number of likely pathogenic variants:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_likely_pathog == 1)))
+paste("Of likely pathogenic, the number observed in our experiment:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_likely_pathog == 1 & !is.na(score))))
+paste("Of likely pathogenic in our experiment, the number that were low abundance:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_likely_pathog == 1 & !is.na(score) & abundance_class == "low")))
+paste("The fraction is then:",round(nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_likely_pathog == 1 & !is.na(score) & abundance_class == "low"))/nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_likely_pathog == 1 & !is.na(score))),2))
+
+paste("Of Clinvar annotated, the number of VUS:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_uncertain == 1)))
+paste("Of VUS, the number observed in our experiment:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_uncertain == 1 & !is.na(score))))
+paste("Of VUS in our experiment, the number that were low abundance:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_uncertain == 1 & !is.na(score) & abundance_class == "low")))
+paste("The fraction is then:",round(nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_uncertain == 1 & !is.na(score) & abundance_class == "low"))/nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_uncertain == 1 & !is.na(score))),2))
+
+paste("Total missense variants possible by SNV and not found in Clinvar:",nrow(subset(pten_variants, snv == 1 & class == "missense" & !(clinvar_pathog == 1 | clinvar_likely_pathog == 1 | clinvar_benign == 1 | clinvar_likely_benign == 1 | clinvar_uncertain == 1))))
+paste("Total missense variants possible by SNV and not found in Clinvar, that we now provide scores for:",nrow(subset(pten_variants, snv == 1 & class == "missense" & !(clinvar_pathog == 1 | clinvar_likely_pathog == 1 | clinvar_benign == 1 | clinvar_likely_benign == 1 | clinvar_uncertain == 1) & !is.na(score))))
+paste("Total missense variants possible by SNV and not found in Clinvar, that we find to be low abundance:",nrow(subset(pten_variants, snv == 1 & class == "missense" & !(clinvar_pathog == 1 | clinvar_likely_pathog == 1 | clinvar_benign == 1 | clinvar_likely_benign == 1 | clinvar_uncertain == 1) & !is.na(score) & abundance_class == "low")))
+paste("Total missense variants possible by SNV and not listed as pathogenic, that we find to be low abundance:",nrow(subset(pten_variants, snv == 1 & class == "missense" & clinvar_pathog != 1 & !is.na(score) & abundance_class == "low")))
+
+paste("Total missense variants possible by SNV, that we find to be low abundance:",nrow(subset(pten_variants, snv == 1 & class == "missense" & !is.na(score))))
+paste("Total missense variants possible by SNV, that we find to be low abundance:",nrow(subset(pten_variants, snv == 1 & class == "missense" & !is.na(score) & abundance_class == "low")))
+paste("Percent of missense variants possible by SNV that we find to be low abundance:",round(nrow(subset(pten_variants, snv == 1 & class == "missense" & !is.na(score) & abundance_class == "low"))/nrow(subset(pten_variants, snv == 1 & class == "missense" & !is.na(score))),2))
+```
+  
+Look at the distribution of stability scores across pathogenic and uncertain.  
+```{r Plot Clinvar Pathogenic vs VUS, warning=FALSE, fig.height = 2, fig.width = 4, warning = FALSE}
+benign_frame <- subset(pten_variants, variant %in% c("A79T","S294R","P354Q"))
+
+possible_snv_plot <- ggplot() + scale_x_continuous(limits = c(min(pten_variants$score, na.rm = TRUE), max(pten_variants$score, na.rm = TRUE))) + xlab(NULL) + ylab("All possible SNV") + scale_y_continuous(limits = c(0,320), breaks = seq(0,200,50), expand = c(0,0.1)) +
+  geom_histogram(data = subset(pten_variants, snv == 1), aes(x = score, fill = factor(abundance_class, levels = c("high","R130G","wt-like","possibly_wt-like","possibly_low","low"))), binwidth = 0.1, alpha = 0.5, position="stack", color = "black") + 
+  geom_point(data = benign_frame, aes(x = score, y = 225, color = abundance_class), size = 1) + annotate("text", x = benign_frame$score, y = 240, label = benign_frame$variant, angle = 45, size = 2.5, color = "black", hjust = 0) +
+  geom_vline(xintercept = pten_synonymous_5th, linetype = 2) + scale_fill_manual(values = custom_colorscale) + scale_color_manual(values = custom_colorscale) + theme(legend.position="none", panel.grid.major = element_line(colour="grey90"))
+ggsave("Output/Classification_all_snv.pdf",possible_snv_plot,height = 1, width = 2)
+possible_snv_plot
+
+clinvar_pathog_plot <- ggplot() + scale_x_continuous(limits = c(min(pten_variants$score, na.rm = TRUE), max(pten_variants$score, na.rm = TRUE))) + xlab(NULL) + ylab("Pathogenic") + scale_y_continuous(breaks = seq(0,10,1), expand = c(0,0.1)) +
+  geom_histogram(data = subset(pten_variants, clinvar_pathog == 1 & (class == "missense")), aes(x = score, fill = factor(abundance_class, levels = c("high","R130G","wt-like","possibly_wt-like","possibly_low","low"))), binwidth = 0.1, alpha = 0.5, position="stack", color = "black") + 
+  geom_vline(xintercept = pten_synonymous_5th, linetype = 2) + scale_fill_manual(values = custom_colorscale) + theme(legend.position="none", panel.grid.major = element_line(colour="grey90"))
+ggsave("Output/Classification_Clinvar_pathogenic.pdf",clinvar_pathog_plot,height = 1, width = 2)
+clinvar_pathog_plot
+
+clinvar_likely_pathog_plot <- ggplot() + scale_x_continuous(limits = c(min(pten_variants$score, na.rm = TRUE), max(pten_variants$score, na.rm = TRUE))) + xlab(NULL) + ylab("Likely Pathogenic") + scale_y_continuous(breaks = seq(0,10,1), expand = c(0,0.1)) +
+  geom_histogram(data = subset(pten_variants, clinvar_likely_pathog == 1 & (class == "missense")), aes(x = score, fill = factor(abundance_class, levels = c("high","R130G","wt-like","possibly_wt-like","possibly_low","low"))), binwidth = 0.1, alpha = 0.5, position="stack", color = "black") + 
+  geom_vline(xintercept = pten_synonymous_5th, linetype = 2) + scale_fill_manual(values = custom_colorscale) + theme(legend.position="none", panel.grid.major = element_line(colour="grey90"))
+ggsave("Output/Classification_Clinvar_likely_pathogenic.pdf",clinvar_likely_pathog_plot,height = 1, width = 2)
+clinvar_likely_pathog_plot
+
+clinvar_vus_plot <- ggplot() + scale_x_continuous(limits = c(min(pten_variants$score, na.rm = TRUE), max(pten_variants$score, na.rm = TRUE))) + xlab(NULL) + ylab("VUS") + scale_y_continuous(breaks = seq(0,20,5), expand = c(0,0.1)) +
+  geom_histogram(data = subset(pten_variants, clinvar_uncertain == 1 & (class == "missense")), aes(x = score, fill = factor(abundance_class, levels = c("high","R130G","wt-like","possibly_wt-like","possibly_low","low"))), binwidth = 0.1, alpha = 0.5, position="stack", color = "black") + 
+  geom_vline(xintercept = pten_synonymous_5th, linetype = 2) + scale_fill_manual(values = custom_colorscale) + theme(legend.position="none", panel.grid.major = element_line(colour="grey90"))
+ggsave("Output/Classification_Clinvar_VUS.pdf",clinvar_vus_plot,height = 1, width = 2)
+clinvar_vus_plot
+```
+
+```{r Determining if any given PTEN variant is observed too frequently in gnomAD to be causative for Cowden Syndrome, warning = FALSE, fig.height = 2, fig.width = 4}
+pten_variants$above_gnomad_allele_count_threshold_for_cowdens <- NA
+
+collective_pten_cowdens_allele_frequency <- 1/400000
+
+for(x in 1:nrow(pten_variants)){
+  if(!is.na(pten_variants$gnomad_allele_count[x])){
+    if(pten_variants$gnomad_allele_count[x] > qbinom(0.99, size = pten_variants$gnomad_allele_number[x], collective_pten_cowdens_allele_frequency / 0.95)){
+      pten_variants$above_gnomad_allele_count_threshold_for_cowdens[x] <- "above threshold"
+    if(pten_variants$gnomad_allele_count[x] <= qbinom(0.99, size = pten_variants$gnomad_allele_number[x], collective_pten_cowdens_allele_frequency / 0.95)){
+      pten_variants$above_gnomad_allele_count_threshold_for_cowdens[x] <- "below threshold"
+    }
+    }
+  }
+}
+
+subset(pten_variants, above_gnomad_allele_count_threshold_for_cowdens == "above threshold")[,c("variant","score","abundance_class")]
+
+Likely_benign_plot <- ggplot() + scale_x_continuous(limits = c(min(pten_variants$score, na.rm = TRUE), max(pten_variants$score, na.rm = TRUE))) + xlab(NULL) + ylab("Likely to be benign") + scale_y_continuous(breaks = c(0,1,2), expand = c(0,0.1)) +
+  geom_histogram(data = subset(pten_variants, above_gnomad_allele_count_threshold_for_cowdens == "above threshold"), aes(x = score, fill = factor(abundance_class, levels = c("high","R130G","wt-like","possibly_wt-like","possibly_low","low"))), binwidth = 0.1, alpha = 0.5, position="stack", color = "black") + 
+  geom_vline(xintercept = pten_synonymous_5th, linetype = 2) + scale_fill_manual(values = custom_colorscale) + theme(legend.position="none", panel.grid.major = element_line(colour="grey90"))
+ggsave("Output/Likely_benign_plot.pdf",Likely_benign_plot,height = 1.5, width = 3)
+Likely_benign_plot
+```
+
+Making bar charts to show pathogenicity distributions across cancers.  
+```{r Bar charts for clinvar pathogs}
+clinvar_list <- c("snv","clinvar_uncertain","clinvar_likely_pathog","clinvar_pathog")
+clinvar_table <- data.frame("clinvar_class" = matrix(c("low","possibly_low","possibly_wt-like","wt-like"), nrow = 4, ncol = 1))
+
+for(x in clinvar_list){
+  clinvar_table$snv <- table(subset(pten_variants, snv == 1 & class == "missense" & !(abundance_class %in% c("unknown","dominant_negative")))[,"abundance_class"]) / nrow(subset(pten_variants, snv == 1 & class == "missense" & !is.na(score)))
+  clinvar_table$clinvar_uncertain <- table(subset(pten_variants, clinvar_uncertain == 1 & class == "missense" & !(abundance_class %in% c("unknown","dominant_negative")))[,"abundance_class"]) / nrow(subset(pten_variants, clinvar_uncertain == 1 & class == "missense" & !is.na(score)))
+  clinvar_table$clinvar_likely_pathog <- table(subset(pten_variants, clinvar_likely_pathog == 1 & class == "missense" & !(abundance_class %in% c("unknown","dominant_negative")))[,"abundance_class"]) / nrow(subset(pten_variants, clinvar_likely_pathog == 1 & class == "missense" & !is.na(score)))
+  clinvar_table$clinvar_pathog <- table(subset(pten_variants, clinvar_pathog == 1 & class == "missense" & !(abundance_class %in% c("unknown","dominant_negative")))[,"abundance_class"]) / nrow(subset(pten_variants, clinvar_pathog == 1 & class == "missense" & !is.na(score)))
+}
+
+clinvar_table_melt <- melt(clinvar_table, id = "clinvar_class")
+clinvar_table_melt$clinvar_class <- factor(clinvar_table_melt$clinvar_class, levels = c("wt-like","possibly_wt-like","possibly_low","low"))
+clinvar_table_melt <- clinvar_table_melt[,c(1,2,4)]
+colnames(clinvar_table_melt) <- c("abundance_class","clinvar_class","count")
+
+pten_clinvar_bar_graphs <- ggplot() + geom_bar(data = clinvar_table_melt, aes(x = clinvar_class, y = count, fill = abundance_class), stat = "identity", position = "fill", color = "black") + coord_flip() + scale_fill_manual(values = custom_colorscale) + xlab(NULL) + ylab(NULL) + theme(legend.position = "none")
+ggsave("Output/PTEN_clinvar_bar_graphs.pdf",pten_clinvar_bar_graphs,height = 2, width = 4)
+pten_clinvar_bar_graphs
+
+```
+  
+Performing a sampling test to see if the ratio of low abundance variants is statistically significant.  
+```{r Sampling test to see if the ratio of low abundance variants is statistically significant}
+## This is the distribution from which I'll sample from
+snv_subset <- pten_variants[pten_variants$snv == 1 & !is.na(pten_variants$score),c("variant","score","abundance_class")]
+
+## This is the table I'll use to keep track of my results
+clinvar_observed_expected_table <- data.frame("abundance_class" = matrix(c("low"), nrow = 1, ncol = 1))
+
+## This is the three different groups I'll test
+clinvar_list <- c("clinvar_pathog","clinvar_likely_pathog","clinvar_uncertain")
+
+for(x in clinvar_list){
+  clinvar_subset <- pten_variants[pten_variants[,paste(x,sep="")] != 0 & !is.na(pten_variants$score),c("variant","score","abundance_class",paste(x,sep=""))]
+  sample_number <- nrow(clinvar_subset)
+  low_class_vector <- c()
+  
+  total_iterations <- 10000
+  
+  for(y in 1:total_iterations){
+    sample_iteration <- sample(snv_subset$abundance_class, size = sample_number, replace = TRUE)
+    low_class_vector <- append(low_class_vector, sum(sample_iteration == "low")/sample_number)
+  }
+  low_class_frame <- data.frame("percentage_low" = low_class_vector)
+  
+  clinvar_observed_low_freq <- sum(clinvar_subset$abundance_class == "low")/nrow(clinvar_subset)
+  
+  low_p_value <- sum(clinvar_observed_low_freq < low_class_frame$percentage_low) / total_iterations
+  
+  p_value_vector <- c(low_p_value)
+  p_value_vector[p_value_vector == 0] <- 1/total_iterations
+  
+  clinvar_observed_expected_table <- cbind(clinvar_observed_expected_table, p_value_vector)
+}
+colnames(clinvar_observed_expected_table) <- c("abundance_class",clinvar_list)
+
+print(t(clinvar_observed_expected_table))
+```
+  
+Ascribing potential new ClinVar variant pathogenicity classifications if low abundance is considered PS3.  
+```{r Making new pathogenicity classifications based on abundance data}
+## PTEN already has PP2 and PP3, thus 2 supporting pathogenic.
+## Except for 3 variants, PTEN also has PM2
+
+## Some sites, such as those very close to the active site, an also be considered PM1 (redundant with PM5)
+## Depending on whether a pathogenic variant was observed at a residue, can have PM5
+## Treating Low-abundance classification as PS3
+
+pten_variants$likely_pathog_new <- 0
+for(x in 1:nrow(pten_variants)){
+  if(!(pten_variants$position[x] %in% unique(subset(pten_variants, clinvar_pathog == 1)$position)) & pten_variants$abundance_class[x] == "low"){
+    pten_variants$likely_pathog_new[x] <- 1}
+}
+
+## Individual example I135k
+i135k_reclass <- subset(pten_variants, variant == "I135K")[,c("variant","hgvs","snv","abundance_class","clinvar_likely_pathog","clinvar_uncertain","gnomad_allele_freq","predictor_fraction_deleterious")]
+i135k_reclass$acmg_amp_criteria <- "PM2, PM5(I135V;PMID 17392703), PP2, PP3, PS3"
+i135k_reclass$acmg_amp_summary <- "1S-2M-2P"
+i135k_reclass$potential_reclassification <- "Pathogenic"
+
+# Individual example K66E
+k66e_reclass <- subset(pten_variants, variant == "K66E")[,c("variant","hgvs","snv","abundance_class","clinvar_likely_pathog","clinvar_uncertain","gnomad_allele_freq","predictor_fraction_deleterious")]
+k66e_reclass$acmg_amp_criteria <- "PM2, PP1 (UW patient data), PP2, PP3, PP4 (UW patient data), PS3"
+k66e_reclass$acmg_amp_summary <- "1S-1M-4P"
+k66e_reclass$potential_reclassification <- "Pathogenic"
+
+## How many low abundance uncertain or unknown single amino acid variants are there?
+paste("Number of low abundance variants that could be considered likely pathogenic if low abundance considered experimental evidence of pathogenicity:",round(nrow(subset(pten_variants, class == "missense" & !is.na(score) & abundance_class == "low" & clinvar_uncertain != 1 & clinvar_likely_pathog != 1 & clinvar_pathog != 1)),2))
+paste("Number of low abundance variants (possible by SNV) that could be considered likely pathogenic if low abundance considered experimental evidence of pathogenicity:",round(nrow(subset(pten_variants, class == "missense" & !is.na(score) & abundance_class == "low" & clinvar_uncertain != 1 & clinvar_likely_pathog != 1 & clinvar_pathog != 1 & snv == 1)),2))
+
+
+## Finding the variants of uncertain significance or unannotated variants I can likely reclassify as likely pathogenic
+likely_pathogenic_reclass <- rbind(subset(pten_variants, class == "missense" & clinvar_uncertain == 1 & clinvar_likely_pathog != 1 & clinvar_pathog != 1 & abundance_class == "low" & predictor_fraction_deleterious > 0 & !(variant %in% c("I135K","K66E")))[,c("variant","hgvs","snv","abundance_class","clinvar_likely_pathog","clinvar_uncertain","gnomad_allele_freq","predictor_fraction_deleterious")],
+                                 subset(pten_variants, class == "missense" & clinvar_likely_pathog != 1 & clinvar_uncertain != 1 & clinvar_pathog != 1 & abundance_class == "low" & predictor_fraction_deleterious > 0 & !(variant %in% c("I135K","K66E")))[,c("variant","hgvs","snv","abundance_class","clinvar_likely_pathog","clinvar_uncertain","gnomad_allele_freq","predictor_fraction_deleterious")])
+
+likely_pathogenic_reclass$acmg_amp_criteria <- ""
+likely_pathogenic_reclass$acmg_amp_summary <- ""
+for(x in 1:nrow(likely_pathogenic_reclass)){
+  if(likely_pathogenic_reclass$predictor_fraction_deleterious[x] >= 0.9){
+    likely_pathogenic_reclass$acmg_amp_criteria[x] <- "Minimally: PM2, PP2, PP3, PS3"
+    likely_pathogenic_reclass$acmg_amp_summary[x] <- "Minimally: 1S-1M-2P"}
+  if(likely_pathogenic_reclass$predictor_fraction_deleterious[x] < 0.9){
+    likely_pathogenic_reclass$acmg_amp_criteria[x] <- "Minimally: PM2, PP2, PS3"
+    likely_pathogenic_reclass$acmg_amp_summary[x] <- "Minimally: 1S-1M-1P"}
+}
+likely_pathogenic_reclass$potential_reclassification <- "Likely pathogenic"
+
+write.table(file = "Output/Supplementary_table_7_pten_reclassifications.tsv", rbind(i135k_reclass, k66e_reclass, likely_pathogenic_reclass), row.names = FALSE, quote = FALSE, sep = "\t")
+```
+  
+  
+# PTEN Abundance Distributions across cancers
+  
+Seeing the distribution of PTEN abudance classes across cancers in cancer genomics data.  
+```{r Variant abundances across cancers, fig.height = 5, fig.width = 5, warning = FALSE}
+## Making a new class for dominant negatives
+pten_variants[pten_variants$variant == "R130G" | pten_variants$variant == "R130Q" | pten_variants$variant == "C124S" | pten_variants$variant == "G129E","abundance_class"] <- "dominant_negative"
+
+## Determine the abundance distribution observed across cancers
+cancer_list <- c("colorectal","brain","nsclc","endometrial","uterine","breast","melanoma")
+cancer_observed_table <- data.frame("abundance_class" = matrix(c("unknown","dominant_negative","wt-like","possibly_wt-like","possibly_low","low"), nrow = 6, ncol = 1))
+
+for(x in cancer_list){
+  temp_frame <- data.frame()
+  temp_subset <- pten_variants[pten_variants[,paste("cancer_",x,"_count",sep="")] != 0 & (!is.na(pten_variants$score) | pten_variants$abundance_class == "dominant_negative" | pten_variants$abundance_class == "unknown"),c("variant","score","abundance_class",paste("cancer_",x,"_count",sep=""))]
+    for(y in 1:nrow(temp_subset)){
+      for(z in 1:temp_subset[y,paste("cancer_",x,"_count",sep="")]){
+        temp_frame <- rbind(temp_frame, temp_subset[y,])}
+    }
+  temp_frame$abundance_class <- factor(temp_frame$abundance_class, levels = c("unknown","dominant_negative","wt-like","possibly_wt-like","possibly_low","low"))
+  assign(x = paste("cancer_",x,"_frame",sep=""), value = temp_frame)
+  cancer_observed_table <- cbind(cancer_observed_table, data.frame(table(temp_frame[,"abundance_class"])/nrow(temp_frame))$Freq)
+}
+colnames(cancer_observed_table) <- c("abundance_class",cancer_list)
+
+cancer_observed_table_melt <- melt(cancer_observed_table, id = "abundance_class")
+cancer_observed_table_melt$abundance_class <- factor(cancer_observed_table_melt$abundance_class, levels = c("unknown","dominant_negative","wt-like","possibly_wt-like","possibly_low","low"))
+
+
+## Make expected abundance distribution based on the mutation spectrum (null hypothesis)
+cancer_expected_table <- data.frame("abundance_class" = matrix(c("unknown","dominant_negative","wt-like","possibly_wt-like","possibly_low","low"), nrow = 6, ncol = 1))
+
+for(x in cancer_list){
+  temp_frame <- data.frame("abundance_class" = sample(pten_variants$abundance_class, size = 10000, prob = pten_variants[,paste(x,"_cancer","_expected",sep="")], replace = TRUE))
+  temp_frame$abundance_class <- factor(temp_frame$abundance_class, levels = c("unknown","dominant_negative","wt-like","possibly_wt-like","possibly_low","low"))
+  assign(x = paste("cancer_",x,"_frame",sep=""), value = temp_frame)
+  cancer_expected_table <- cbind(cancer_expected_table, data.frame(table(temp_frame[,"abundance_class"])/nrow(temp_frame))$Freq)
+}
+colnames(cancer_expected_table) <- c("abundance_class",cancer_list)
+
+cancer_expected_table_melt <- melt(cancer_expected_table, id = "abundance_class")
+cancer_expected_table_melt$abundance_class <- factor(cancer_expected_table_melt$abundance_class, levels = c("unknown","dominant_negative","wt-like","possibly_wt-like","possibly_low","low"))
+
+## Making a hybrid chart that shows both observed and expected abundance frequencies across cancers
+cancer_observed_table_melt$group <- "Observed"
+cancer_observed_table_melt$width <- 1.2
+cancer_expected_table_melt$group <- "Expected"
+cancer_expected_table_melt$width <- .8
+
+observed_expected_table_melt <- rbind(cancer_observed_table_melt, cancer_expected_table_melt)
+observed_expected_table_melt$variable <- as.character(observed_expected_table_melt$variable)
+for(x in 1:nrow(observed_expected_table_melt)){
+  if(observed_expected_table_melt$variable[x] == "colorectal"){observed_expected_table_melt$variable[x] <- paste("Colorectal"," (n = ",sum(subset(pten_variants, !is.na(score))[,"cancer_colorectal_count"]),")",sep="")}
+  if(observed_expected_table_melt$variable[x] == "brain"){observed_expected_table_melt$variable[x] <- paste("Brain"," (n = ",sum(subset(pten_variants, !is.na(score))[,"cancer_brain_count"]),")",sep="")}
+  if(observed_expected_table_melt$variable[x] == "nsclc"){observed_expected_table_melt$variable[x] <- paste("NSCLC"," (n = ",sum(subset(pten_variants, !is.na(score))[,"cancer_nsclc_count"]),")",sep="")}
+  if(observed_expected_table_melt$variable[x] == "endometrial"){observed_expected_table_melt$variable[x] <- paste("Endometrial"," (n = ",sum(subset(pten_variants, !is.na(score))[,"cancer_endometrial_count"]),")",sep="")}
+  if(observed_expected_table_melt$variable[x] == "uterine"){observed_expected_table_melt$variable[x] <- paste("Uterine"," (n = ",sum(subset(pten_variants, !is.na(score))[,"cancer_uterine_count"]),")",sep="")}
+  if(observed_expected_table_melt$variable[x] == "breast"){observed_expected_table_melt$variable[x] <- paste("Breast"," (n = ",sum(subset(pten_variants, !is.na(score))[,"cancer_breast_count"]),")",sep="")}
+  if(observed_expected_table_melt$variable[x] == "melanoma"){observed_expected_table_melt$variable[x] <- paste("Melanoma"," (n = ",sum(subset(pten_variants, !is.na(score))[,"cancer_melanoma_count"]),")",sep="")}
+  }
+
+cancer_combined_bar_graphs <- ggplot() + geom_bar(data = observed_expected_table_melt, aes(x = group, y = value, fill = abundance_class, width = width), position = "fill", stat = "identity", color = "black") + 
+  coord_flip() + xlab(NULL) + ylab("Proportion of stability score class") + scale_y_continuous(expand = c(0,0.01)) + theme(legend.position = "top") + scale_fill_manual(values = custom_colorscale) +
+  facet_wrap( ~ variable, nrow = 7, strip.position = "right") + theme(strip.text.y = element_text(angle=0), strip.background = element_rect(fill="white")) 
+ggsave("Output/Cancer_combined_bar_graphs.pdf",cancer_combined_bar_graphs,height = 4.5, width = 4)
+cancer_combined_bar_graphs
+```
+  
+```{r Using sampling of NULL distribution to assess significance}
+cancer_list <- c("colorectal","brain","nsclc","endometrial","uterine","breast","melanoma")
+cancer_observed_expected_table <- data.frame("abundance_class" = matrix(c("dominant_negative","low","p38s"), nrow = 3, ncol = 1))
+
+cancer_brain_table <- subset(pten_variants, cancer_brain_count > 0)[,c("variant","cancer_brain_count")]
+cancer_uterine_table <- subset(pten_variants, cancer_uterine_count > 0)[,c("variant","cancer_uterine_count")]
+cancer_breast_table <- subset(pten_variants, cancer_breast_count > 0)[,c("variant","cancer_breast_count")]
+cancer_colorectal_table <- subset(pten_variants, cancer_colorectal_count > 0)[,c("variant","cancer_colorectal_count")]
+cancer_nsclc_table <- subset(pten_variants, cancer_nsclc_count > 0)[,c("variant","cancer_nsclc_count")]
+cancer_endometrial_table <- subset(pten_variants, cancer_endometrial_count > 0)[,c("variant","cancer_endometrial_count")]
+cancer_melanoma_table <- subset(pten_variants, cancer_melanoma_count > 0)[,c("variant","cancer_melanoma_count")]
+
+## Another table specific for the P38S variant
+cancer_observed_variant_table <- data.frame("P38S",sum(cancer_colorectal_table[cancer_colorectal_table$variant == "P38S","cancer_colorectal_count"]),sum(cancer_brain_table[cancer_brain_table$variant == "P38S","cancer_brain_count"]),
+                                            sum(cancer_nsclc_table[cancer_nsclc_table$variant == "P38S","cancer_nsclc_count"]),sum(cancer_endometrial_table[cancer_endometrial_table$variant == "P38S","cancer_endometrial_count"]),
+                                            sum(cancer_uterine_table[cancer_uterine_table$variant == "P38S","cancer_uterine_count"]),sum(cancer_breast_table[cancer_breast_table$variant == "P38S","cancer_breast_count"]),
+                                            sum(cancer_melanoma_table[cancer_melanoma_table$variant == "P38S","cancer_melanoma_count"]))
+colnames(cancer_observed_variant_table) <- c("variant",cancer_list)
+
+## How many times to try resampling
+total_iterations <- 10000
+
+## Resampling test for the known dominant negative and low abundance classes.
+for(x in cancer_list){
+  cancer_subset <- pten_variants[pten_variants[,paste(x,"_cancer","_expected",sep="")] != 0,c("variant","score","abundance_class",paste(x,"_cancer","_expected",sep=""))]
+  sample_number <- sum(pten_variants[,paste("cancer_",x,"_count",sep="")])
+  
+  dominant_negative_class_vector <- c()
+  low_class_vector <- c()
+  for(y in 1:total_iterations){
+    sample_iteration <- sample(cancer_subset$abundance_class, size = sample_number, prob = cancer_subset[,paste(x,"_cancer","_expected",sep="")], replace = TRUE)
+    dominant_negative_class_vector <- append(dominant_negative_class_vector, sum(sample_iteration == "dominant_negative")/sample_number)
+    low_class_vector <- append(low_class_vector, sum(sample_iteration == "low")/sample_number)
+  }
+  dominant_negative_class_frame <- data.frame("percentage_dominant_negative" = dominant_negative_class_vector)
+  low_class_frame <- data.frame("percentage_low" = low_class_vector)
+  
+  cancer_observed_dominant_negative_freq <- cancer_observed_table[cancer_observed_table$abundance_class == "dominant_negative",x]
+  cancer_observed_low_freq <- cancer_observed_table[cancer_observed_table$abundance_class == "low",x]
+  
+  p38s_vector <- c()
+  for(y in 1:total_iterations){
+    sample_iteration <- sample(cancer_subset$variant, size = sample_number, prob = cancer_subset[,paste(x,"_cancer","_expected",sep="")], replace = TRUE)
+    p38s_vector <- append(p38s_vector, sum(sample_iteration == "P38S")/sample_number)
+  }
+  p38s_frame <- data.frame("percentage_p38s" = p38s_vector)
+  
+  cancer_observed_p38s_freq <- cancer_observed_variant_table[cancer_observed_variant_table$variant == "P38S",x]
+  
+  dominant_negative_p_value <- sum(cancer_observed_dominant_negative_freq < dominant_negative_class_frame$percentage_dominant_negative) / total_iterations
+  low_p_value <- sum(cancer_observed_low_freq < low_class_frame$percentage_low) / total_iterations
+  p38s_p_value <- sum(cancer_observed_p38s_freq < p38s_frame$percentage_p38s) / total_iterations
+  
+  p_value_vector <- c(dominant_negative_p_value,low_p_value,p38s_p_value)
+  p_value_vector[p_value_vector == 0] <- 1/total_iterations
+  
+  cancer_observed_expected_table <- cbind(cancer_observed_expected_table, p_value_vector)
+}
+
+colnames(cancer_observed_expected_table) <- c("abundance_class",cancer_list)
+
+print(t(cancer_observed_expected_table))
+```
+  
+```{r Dominant negative variants scores, echo = FALSE}
+paste("Abundance score for C124S:",round(subset(pten_variants, variant == "C124S")$score,2))
+paste("Abundance score for R130G:",round(subset(pten_variants, variant == "R130G")$score,2))
+paste("Abundance score for G129E:",round(subset(pten_variants, variant == "G129E")$score,2))
+paste("The R130Q variant was not found in our library")
+```
+  
+```{r Looking at Individual variant distributions across cancers}
+text_frequency_cutoff <- 0.05
+
+Hotspot_variants_across_cancers <- ggplot() + geom_boxplot(data = pten_variants, aes(x = "1. Brain", y = cancer_brain_count / sum(cancer_brain_count)), width = 0.1, alpha = 0.5) +
+  geom_text(data = subset(pten_variants, cancer_brain_count / sum(cancer_brain_count) > text_frequency_cutoff), aes(x = "1. Brain", y = (cancer_brain_count / sum(pten_variants$cancer_brain_count))),
+            label = subset(pten_variants, cancer_brain_count / sum(cancer_brain_count) > text_frequency_cutoff)[,"variant"], position = position_nudge(x = 0.1), color = "red", angle = -45, hjust = 0, size = 2) +
+  geom_boxplot(data = pten_variants, aes(x = "2. Colorectal", y = cancer_colorectal_count / sum(cancer_colorectal_count)), width = 0.1, alpha = 0.5) +
+  geom_text(data = subset(pten_variants, cancer_colorectal_count / sum(cancer_colorectal_count) > text_frequency_cutoff), aes(x = "2. Colorectal", y = (cancer_colorectal_count / sum(pten_variants$cancer_colorectal_count))),
+            label = subset(pten_variants, cancer_colorectal_count / sum(cancer_colorectal_count) > text_frequency_cutoff)[,"variant"], position = position_nudge(x = 0.15), color = "red", angle = -45, hjust = 0, size = 2) +
+  geom_boxplot(data = pten_variants, aes(x = "3. Nsclc", y = cancer_nsclc_count / sum(cancer_nsclc_count)), width = 0.1, alpha = 0.5) +
+  geom_text(data = subset(pten_variants, cancer_nsclc_count / sum(cancer_nsclc_count) > text_frequency_cutoff), aes(x = "3. Nsclc", y = (cancer_nsclc_count / sum(pten_variants$cancer_nsclc_count))),
+            label = subset(pten_variants, cancer_nsclc_count / sum(cancer_nsclc_count) > text_frequency_cutoff)[,"variant"], position = position_nudge(x = 0.15), color = "red", angle = -45, hjust = 0, size = 2) +
+  geom_boxplot(data = pten_variants, aes(x = "4. Endometrial", y = cancer_endometrial_count / sum(cancer_endometrial_count)), width = 0.1, alpha = 0.5) +
+  geom_text(data = subset(pten_variants, cancer_endometrial_count / sum(cancer_endometrial_count) > text_frequency_cutoff), aes(x = "4. Endometrial", y = (cancer_endometrial_count / sum(pten_variants$cancer_endometrial_count))),
+            label = subset(pten_variants, cancer_endometrial_count / sum(cancer_endometrial_count) > text_frequency_cutoff)[,"variant"], position = position_nudge(x = 0.15), color = "red", angle = -45, hjust = 0, size = 2) +
+  geom_boxplot(data = pten_variants, aes(x = "5. Uterine", y = cancer_uterine_count / sum(cancer_uterine_count)), width = 0.1, alpha = 0.5) +
+  geom_text(data = subset(pten_variants, cancer_uterine_count / sum(cancer_uterine_count) > text_frequency_cutoff), aes(x = "5. Uterine", y = (cancer_uterine_count / sum(pten_variants$cancer_uterine_count))),
+            label = subset(pten_variants, cancer_uterine_count / sum(cancer_uterine_count) > text_frequency_cutoff)[,"variant"], position = position_nudge(x = 0.15), color = "red", angle = -45, hjust = 0, size = 2) +
+  geom_boxplot(data = pten_variants, aes(x = "6. Breast", y = cancer_breast_count / sum(cancer_breast_count)), width = 0.1, alpha = 0.5) +
+  geom_boxplot(data = pten_variants, aes(x = "7. Melanoma", y = cancer_melanoma_count / sum(cancer_melanoma_count)), width = 0.1, alpha = 0.5) +
+  geom_text(data = subset(pten_variants, cancer_melanoma_count / sum(cancer_melanoma_count) > text_frequency_cutoff), aes(x = "7. Melanoma", y = (cancer_melanoma_count / sum(pten_variants$cancer_melanoma_count))),
+            label = subset(pten_variants, cancer_melanoma_count / sum(cancer_melanoma_count) > text_frequency_cutoff)[,"variant"], position = position_nudge(x = 0.15), color = "red", angle = -45, hjust = 0, size = 2) + xlab(NULL) + ylab("Variant frequency in cancer type") +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+ggsave("Output/Hotspot_variants_across_cancers.pdf",Hotspot_variants_across_cancers,height = 2.5, width = 4)
+Hotspot_variants_across_cancers
+```
+  
+```{r Printing P38S frequency in melanoma, echo = FALSE}
+paste("Number of PTEN variants in the Melanoma dataset"," (n = ",sum(subset(pten_variants, !is.na(score) | is.na(score))[,"cancer_melanoma_count"]),")",sep="")
+
+paste("P38S amounted to",round(subset(pten_variants, variant == "P38S")$cancer_melanoma_count / sum(pten_variants$cancer_melanoma_count) * 100,2),"% of the observed SNV variants in melanoma")
+paste("Abundance score for P38S:",round(subset(pten_variants, variant == "P38S")$score,2))
+```
+  
+  
+#### Compare my stability scores to the Rosetta monomer ddg output
+
+Here we see how the PTEN VAMP-seq scores compare to the Rosetta computational predictor of folding free energies. Notably, Rosetta suggested that P38S is thermodynamically unstable, which contrasts the WT-like VAMP-seq score, and the WT-like steady-state expression by Western Blot (Fig 4f and Supplementary Fig 5e).  
+```{r Comparing PTEN Rosetta monomer_ddg results with my stability data, fig.width = 5, fig.height = 5, warning = FALSE}
+## These are the variants I want to highlight in the plot
+notables_list <- c("WT","C124S","C136W","C136R")
+
+pten_ddg_subset <- subset(pten_variants, !is.na(pten_variants$ddg))[,c("variant","ddg","score","start","end","abundance_class")]
+pten_ddg_subset$ddg <- as.numeric(pten_ddg_subset$ddg)
+pten_ddg_subset$score <- as.numeric(pten_ddg_subset$score)
+pten_ddg_subset$position <- gsub("[^0-9]","",pten_ddg_subset$variant)
+
+n <- 1000
+x <- mvrnorm(n, mu=c(.5,2.5), Sigma=matrix(c(1,.6,.6,1), ncol=2))
+df = data.frame(x); colnames(df) = c("x","y")
+
+commonTheme = list(labs(color="Density",fill="Density",
+                        x="Rosetta delta delta G",
+                        y="Abundance score"),
+                   theme_bw(),
+                   theme(legend.position = "none",
+                         legend.justification=c(0,1)))
+
+PTEN_ddg_density_plot <- ggplot(data=pten_ddg_subset,aes(ddg,score)) + 
+  geom_hline(yintercept = 1, color = "grey75", linetype = 2) + geom_vline(xintercept = 0, color = "grey75", linetype = 2) +
+  geom_density2d(aes(colour=..level..)) + 
+  scale_colour_gradient(low="green",high="red") + 
+  geom_point(data = subset(pten_variants, class == "wt"), aes(x = ddg, y = score), shape = 4, size = 2) +
+  geom_point(data = subset(pten_ddg_subset, score < 17), aes(x = ddg, y = score), alpha = 0.2) + commonTheme +
+  geom_point(data = subset(pten_variants, variant %in% c("WT","P38S","C124S","G129E","R130G","C136R")), aes(x = ddg, y = score), color = "blue", size = 0.4) +
+  geom_point(data = subset(pten_variants, ddg > 17), aes(x = 17, y = score), shape = 4) +
+  geom_text(data = subset(pten_variants, variant == "C124S"), aes(x = ddg, y = score + 0.025, label = variant), shape = 4, color = "blue") +
+  geom_text(data = subset(pten_variants, variant == "P38S"), aes(x = ddg, y = score + 0.025, label = variant), shape = 4, color = "blue") +
+  geom_text(data = subset(pten_variants, variant == "R130G"), aes(x = ddg, y = score + 0.025, label = variant), shape = 4, color = "blue") +
+  geom_text(data = subset(pten_variants, variant == "G129E"), aes(x = ddg, y = score + 0.025, label = variant), shape = 4, color = "blue") +
+  geom_text(data = subset(pten_variants, variant == "C136R"), aes(x = ddg, y = score + 0.025, label = variant), shape = 4, color = "blue") +
+  geom_text(data = subset(pten_variants, variant == "WT"), aes(x = ddg, y = score + 0.025, label = variant), shape = 4, color = "blue") +
+  scale_x_continuous(limits = c(-5,17))
+ggsave(file = "Output/PTEN_ddg_density_plot.pdf", PTEN_ddg_density_plot, height = 2.5, width = 3)
+PTEN_ddg_density_plot
+```
+  
+  
+# TPMT analysis with pharmacogenomic data
+
+Here, we looked at the distribution of abundance classes given to the TPMT variants and furthermore highlight the abundance scores and classes for common TPMT alleles that have been previous characterized. Additionally, we plot the 120 rare TPMT variants observed in genome and exome studies, and suggest that these may be decreased-function variants and that the risk for thiopurine toxicity may be elevated in patients harboring them.  
+```{r TPMT all SNV and gnomad, fig.height = 2, fig.width = 2, warning = FALSE}
+tpmt_pharmacoframe <- subset(tpmt_variants, variant %in% c("A80P","A154T","Y240C","Q179H","S125L","R215H","R226Q"))
+
+TPMT_possible_snv_plot <- ggplot() + 
+  geom_histogram(data = subset(tpmt_variants, snv == 1), aes(x = score, fill = factor(abundance_class, levels = c("high","wt-like","possibly_wt-like","possibly_low","low"))), binwidth = 0.1, alpha = 0.5, position="stack", color = "black") +
+  geom_point(data = tpmt_pharmacoframe, aes(x = score, y = 200, color = abundance_class), size = 1, alpha = 0.5) + annotate("text", x = tpmt_pharmacoframe$score, y = 215, label = tpmt_pharmacoframe$variant, angle = 45, size = 2.5, color = "black", hjust = 0) + scale_color_manual(values = custom_colorscale) +
+  scale_fill_manual(values = custom_colorscale) + theme(legend.position="none", panel.grid.major = element_line(colour="grey90")) +
+  scale_x_continuous(limits = c(min(tpmt_variants$score, na.rm = TRUE), max(tpmt_variants$score, na.rm = TRUE))) + xlab(NULL) + ylab("Possible SNV") + 
+  scale_y_continuous(limits = c(0,290), breaks = seq(0,200,50), expand = c(0,0.1))
+ggsave("Output/TPMT_possible_snv_plot.pdf",TPMT_possible_snv_plot,height = 1.4, width = 2)
+TPMT_possible_snv_plot
+
+TPMT_gnomad_plot <- ggplot() + geom_histogram(data = subset(tpmt_variants, !is.na(gnomad_allele_freq) & class == "missense"), aes(x = score, fill = factor(abundance_class, levels = c("high","R130G","wt-like","possibly_wt-like","possibly_low","low"))), binwidth = 0.1, alpha = 0.5, position="stack", color = "black") +
+  scale_x_continuous(limits = c(min(tpmt_variants$score, na.rm = TRUE), max(tpmt_variants$score, na.rm = TRUE))) + xlab(NULL) + ylab("Pathog") + 
+  scale_y_continuous(expand = c(0,0.1)) + xlab(NULL) + ylab("Pathog") + 
+  scale_fill_manual(values = custom_colorscale) + theme(legend.position="none", panel.grid.major = element_line(colour="grey90"))
+ggsave("Output/TPMT_gnomad_plot.pdf",TPMT_gnomad_plot,height = 1, width = 1.97)
+TPMT_gnomad_plot
+```
+  
+Here, we compared TPMT abundance, either as VAMP-seq abundance scores or normalized EGFP:mCherry ratios, with TPMT alleles tested tested in a Red Blood Cell activity assay or dosing intensities used to treat patients. Notably, we observed that Thiopurine dose intensity was highly correlated with variant abundance.  
+```{r TPMT abundance as compared to dosage intensity, warning = FALSE, fig.height = 3, fig.width = 3}
+TPMT_rbc_activity_plot <- ggplot() + geom_abline(slope = lm(tpmt_variants$rbc_assay ~ tpmt_variants$score)$coefficient[2], intercept = lm(tpmt_variants$rbc_assay ~ tpmt_variants$score)$coefficient[1], linetype = 2, color = "grey50") + geom_point(data = tpmt_variants, aes(x = score, y = rbc_assay)) + xlab("Abundance score") + ylab("RBC assay") +
+  geom_text(data = tpmt_variants, aes(x = score, y = rbc_assay + 0.015), label = tpmt_variants$variant, color = "red") + 
+  scale_x_continuous(limits = c(min(subset(tpmt_variants, !is.na(rbc_assay))$score, na.rm = TRUE), max(subset(tpmt_variants, !is.na(rbc_assay))$score, na.rm = TRUE)), expand = c(0,0.2)) +
+  annotate("text", x = min(subset(tpmt_variants, !is.na(rbc_assay))$score, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(rbc_assay))$rbc_assay, na.rm = TRUE),
+           label = paste("r:",round(sqrt(summary(lm(tpmt_variants$rbc_assay ~ tpmt_variants$score))$r.squared),2)), hjust = 0.1) +
+  annotate("text", x = min(subset(tpmt_variants, !is.na(rbc_assay))$score, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(rbc_assay))$rbc_assay, na.rm = TRUE) - 1, label = paste("rho:",round(cor(tpmt_variants$rbc_assay, tpmt_variants$score, use="pairwise.complete.obs", method = "spearman"),2)), hjust = 0.1, parse = TRUE)
+ggsave("Output/TPMT_rbc_activity_plot.pdf",TPMT_rbc_activity_plot,height = 3, width = 3)
+TPMT_rbc_activity_plot
+
+TPMT_rbc_activity_individual_plot <- ggplot() + geom_abline(slope = lm(tpmt_variants$rbc_assay ~ tpmt_variants$single_WTNorm)$coefficient[2], intercept = lm(tpmt_variants$rbc_assay ~ tpmt_variants$single_WTNorm)$coefficient[1], linetype = 2, color = "grey50") + geom_point(data = tpmt_variants, aes(x = single_WTNorm, y = rbc_assay)) + xlab("WT-normalized EGFP:mCherry\ngeometric mean") + ylab("RBC assay") +
+  geom_text(data = tpmt_variants, aes(x = single_WTNorm, y = rbc_assay - 0.015), label = tpmt_variants$variant, color = "red") + 
+  scale_x_continuous(limits = c(min(subset(tpmt_variants, !is.na(rbc_assay))$single_WTNorm, na.rm = TRUE), max(subset(tpmt_variants, !is.na(rbc_assay))$single_WTNorm, na.rm = TRUE)), expand = c(0,0.2)) +
+  annotate("text", x = min(subset(tpmt_variants, !is.na(rbc_assay))$single_WTNorm, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(rbc_assay))$rbc_assay, na.rm = TRUE),
+           label = paste("r:",round(sqrt(summary(lm(tpmt_variants$rbc_assay ~ tpmt_variants$single_WTNorm))$r.squared),2)), hjust = 0.1) +
+  annotate("text", x = min(subset(tpmt_variants, !is.na(rbc_assay))$single_WTNorm, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(rbc_assay))$rbc_assay, na.rm = TRUE) - 1, label = paste("rho:",round(cor(tpmt_variants$rbc_assay, tpmt_variants$single_WTNorm, use="pairwise.complete.obs", method = "spearman"),2)), hjust = 0.1, parse = TRUE)
+ggsave("Output/TPMT_rbc_activity_individual_plot.pdf",TPMT_rbc_activity_individual_plot,height = 3, width = 3)
+TPMT_rbc_activity_individual_plot
+
+TPMT_dosage_intensity_plot <- ggplot() + geom_abline(slope = lm(tpmt_variants$average_dose_intensity ~ tpmt_variants$score)$coefficient[2], intercept = lm(tpmt_variants$average_dose_intensity ~ tpmt_variants$score)$coefficient[1], linetype = 2, color = "grey50") +
+  geom_point(data = tpmt_variants, aes(x = score, y = average_dose_intensity)) + xlab("Abundance score") + ylab("Dosing intensity") +
+  geom_text(data = tpmt_variants, aes(x = score, y = average_dose_intensity + 0.015), label = tpmt_variants$variant, color = "red") + 
+  scale_x_continuous(limits = c(min(subset(tpmt_variants, !is.na(average_dose_intensity))$score, na.rm = TRUE), max(subset(tpmt_variants, !is.na(average_dose_intensity))$score, na.rm = TRUE)), expand = c(0,0.2)) + 
+  annotate("text", x = min(subset(tpmt_variants, !is.na(average_dose_intensity))$score, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(average_dose_intensity))$average_dose_intensity, na.rm = TRUE),
+           label = paste("r:",round(sqrt(summary(lm(tpmt_variants$average_dose_intensity ~ tpmt_variants$score))$r.squared),2)), hjust = 0.1) +
+  annotate("text", x = min(subset(tpmt_variants, !is.na(average_dose_intensity))$score, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(average_dose_intensity))$average_dose_intensity, na.rm = TRUE) - 0.03, label = paste("rho:",round(cor(tpmt_variants$average_dose_intensity, tpmt_variants$score, use="pairwise.complete.obs", method = "spearman"),2)), hjust = 0.1, parse = TRUE)
+ggsave("Output/TPMT_dosage_intensity_plot.pdf",TPMT_dosage_intensity_plot,height = 3, width = 3)
+TPMT_dosage_intensity_plot
+  
+TPMT_dosage_intensity_individual_plot <- ggplot() + geom_abline(slope = lm(tpmt_variants$average_dose_intensity ~ tpmt_variants$single_WTNorm)$coefficient[2], intercept = lm(tpmt_variants$average_dose_intensity ~ tpmt_variants$single_WTNorm)$coefficient[1], linetype = 2, color = "grey50") + 
+  geom_point(data = tpmt_variants, aes(x = single_WTNorm, y = average_dose_intensity)) + xlab("WT-normalized EGFP:mCherry\ngeometric mean") + ylab("Dosing intensity") +
+  geom_text(data = tpmt_variants, aes(x = single_WTNorm, y = average_dose_intensity + 0.012), label = tpmt_variants$variant, color = "red") +
+  annotate("text", x = min(subset(tpmt_variants, !is.na(average_dose_intensity))$single_WTNorm, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(average_dose_intensity))$average_dose_intensity, na.rm = TRUE), label = paste("r:",round(sqrt(summary(lm(tpmt_variants$average_dose_intensity ~ tpmt_variants$single_WTNorm))$r.squared),2)), hjust = 0.1) +
+  annotate("text", x = min(subset(tpmt_variants, !is.na(average_dose_intensity))$single_WTNorm, na.rm = TRUE), y = max(subset(tpmt_variants, !is.na(average_dose_intensity))$average_dose_intensity, na.rm = TRUE) - 0.03, label = paste("rho:",round(cor(tpmt_variants$average_dose_intensity, tpmt_variants$single_WTNorm, use="pairwise.complete.obs", method = "spearman"),2)), hjust = 0.1, parse = TRUE) +
+  scale_x_continuous(limits = c(min(subset(tpmt_variants, !is.na(average_dose_intensity))$single_WTNorm, na.rm = TRUE), max(subset(tpmt_variants, !is.na(average_dose_intensity))$single_WTNorm, na.rm = TRUE)), expand = c(0,0.2))
+ggsave("Output/TPMT_dosage_intensity_individual_plot.pdf",TPMT_dosage_intensity_individual_plot,height = 3, width = 3)
+TPMT_dosage_intensity_individual_plot
+```
+  
+Finally, some basic stats of TPMT in our dataset.  
+```{r TPMT stats, echo = FALSE}
+paste("TPMT rare missense variants with MAF > 4e-6 (regardless of abundance score):",nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense")))
+
+paste("TPMT missense variants possible through SNV, with possibly low abundance scores:",nrow(subset(tpmt_variants, class == "missense" & abundance_class == "low")))
+paste("TPMT rare missense variants with MAF > 4e-6:",nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense" & !is.na(score))))
+paste("TPMT rare missense variants with MAF > 4e-6, with low abundance scores:",nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense" & abundance_class == "low")))
+paste("Ratio of low abundance TPMT variants of those observed with MAF > 4e-6:",round(nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense" & abundance_class == "low"))/nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense" & !is.na(score))),2))
+paste("TPMT rare missense variants with MAF > 4e-6, with possibly low abundance scores:",nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense" & abundance_class == "possibly_low")))
+paste("Ratio of possibly low abundance TPMT variants of those observed with MAF > 4e-6:",round(nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense" & abundance_class == "possibly_low"))/nrow(subset(tpmt_variants, gnomad_allele_freq > 4e-6 & snv == 1 & class == "missense" & !is.na(score))),2))
+paste("TPMT missense variants possible through SNV, with low or possibly low abundance scores:",nrow(subset(tpmt_variants, snv == 1 & class == "missense" & (abundance_class == "low" |abundance_class == "possibly_low"))))
+```
